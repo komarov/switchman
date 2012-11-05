@@ -1,0 +1,10 @@
+---
+  package: switchman
+  description: distributed job execution control
+  requires:
+    libgetopt-long-perl: 0
+    libnet-zookeeper-perl: 0
+    libnet-zookeeper-lock-perl: '>=0.03-1'
+    libsys-hostname-fqdn-perl: 0
+    libjson-perl: 0
+    libfile-slurp-perl: 0

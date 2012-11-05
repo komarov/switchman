@@ -1,0 +1,5 @@
+0.02
++ store hostname and pid in lock znode
+
+0.01
+initial release
