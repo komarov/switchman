@@ -43,36 +43,24 @@ checks fails, the command is terminated.
 use strict;
 use warnings;
 
-use File::Basename qw(basename);
-use File::Slurp;
-use Getopt::Long;
-use JSON;
-use Net::ZooKeeper::Lock;
+use App::Switchman;
 use Net::ZooKeeper qw(:errors);
+use Net::ZooKeeper::Lock;
 use POSIX qw(WNOHANG);
 use Pod::Usage;
 use Sys::Hostname::FQDN qw(fqdn);
 
-# We gonna create a single child process
-# and help it die properly
-our $CHILD;
+my $options = App::Switchman::process_arguments(\@ARGV);
 
-my $CONFIG_PATH = '';
-my $GROUP = '';
-my $LOCKNAME;
-GetOptions(
-    'config=s' => \$CONFIG_PATH,
-    'group=s' => \$GROUP,
-    'help' => \&usage,
-    'lockname=s' => \$LOCKNAME,
-) or die "Couldn't parse options: $!";
+usage() if $options->{help};
+my $CONFIG_PATH = $options->{CONFIG_PATH};
+my $GROUP = $options->{GROUP};
+my $LOCKNAME = $options->{LOCKNAME} or die "See $0 --help\n";
 die "--config is missing\n" unless $CONFIG_PATH;
 die "--group is missing\n" unless $GROUP;
-
-$LOCKNAME ||= basename($ARGV[0]);
 die "lockname is too long: $LOCKNAME\n" if length($LOCKNAME) > 512; # safe limit, ZooKeeper can handle path length up to 1024
 
-my $config = get_and_check_config($CONFIG_PATH);
+my $config = App::Switchman::get_and_check_config($CONFIG_PATH);
 
 # OK to start
 
@@ -80,8 +68,8 @@ my $zkh = Net::ZooKeeper->new($config->{zkhosts});
 my $data_watch = $zkh->watch();
 my $data = $zkh->get($config->{prefix}, watch => $data_watch) or die 'Could not get data: '.$zkh->get_error();
 
-unless (is_group_serviced($GROUP, $data)) {
-    debug("Group <$GROUP> is not serviced at the moment");
+unless (App::Switchman::is_group_serviced($GROUP, $data)) {
+    App::Switchman::debug("Group <$GROUP> is not serviced at the moment");
     exit;
 }
 
@@ -103,6 +91,10 @@ unless ($lock) {
 
 my $lock_watch = $zkh->watch();
 $zkh->exists($lock->lock_path, watch => $lock_watch);
+
+# We gonna create a single child process
+# and help it die properly
+our $CHILD;
 
 # we want to exit right after our child dies
 $SIG{CHLD} = sub {
@@ -133,14 +125,14 @@ if ($CHILD) {
     while (1) {
         if ($lock_watch->{state}) {
             warn "It's not secure to proceed, lock watch received $lock_watch->{event}";
-            stop_child($CHILD);
+            App::Switchman::stop_child($CHILD);
             last;
         }
         if ($data_watch->{state}) {
             my $new_data = $zkh->get($config->{prefix}, watch => $data_watch) or die 'Could not get data: '.$zkh->get_error();
-            unless (is_group_serviced($GROUP, $new_data)) {
-                debug("Group <$GROUP> is not serviced by current host anymore");
-                stop_child($CHILD);
+            unless (App::Switchman::is_group_serviced($GROUP, $new_data)) {
+                App::Switchman::debug("Group <$GROUP> is not serviced by current host anymore");
+                App::Switchman::stop_child($CHILD);
                 last;
             }
         }
@@ -154,77 +146,6 @@ if ($CHILD) {
         *Net::ZooKeeper::Lock::DESTROY = sub {};
     }
     exec(@ARGV) or die "Failed to exec <".join(' ', @ARGV).">: $!\n";
-}
-
-
-=head1 INTERNALS
-=head2 get_and_check_config
-
-Dies if config is invalid
-
-=cut
-
-sub get_and_check_config
-{
-    my $config_path = shift;
-
-    my $config_json = read_file($config_path, binmode => ':utf8');
-    $config_json =~ s/(?:^\s*|\s*$)//gm;
-    my $config = from_json($config_json);
-    die "zkhosts is not defined in $config_path\n" unless $config->{zkhosts};
-    die "zk chroot is not supported in older versions, use prefix in $config_path\n" if $config->{zkhosts} =~ m!/\w+!;
-    die "prefix is not defined in $config_path\n" unless $config->{prefix};
-
-    return $config;
-}
-
-
-=head2 is_group_serviced
-
-Determines if execution is allowed on current host
-
-=cut
-
-sub is_group_serviced
-{
-    my ($group, $data) = @_;
-
-    $data = from_json $data;
-    my $hosts = eval {$data->{groups}->{$group}} or die "Group <$group> is not described";
-    return scalar grep {fqdn() eq $_} ref $hosts ? @$hosts : ($hosts);
-}
-
-
-=head2 stop_child
-
-Kills child process
-
-=cut
-
-sub stop_child
-{
-    my $pid = shift;
-
-    kill TERM => $pid or die "Failed to TERM $pid";
-    # give some time to terminate gracefully
-    for (1 .. 10) {
-        return unless kill 0 => $pid;
-        sleep 1;
-    }
-    # ran out of patience
-    kill KILL => $pid or die "Failed to KILL $pid";
-}
-
-
-=head2 debug
-
-Produces a warn if DEBUG is set in ENV
-
-=cut
-
-sub debug
-{
-    warn @_ if $ENV{DEBUG};
 }
 
 
