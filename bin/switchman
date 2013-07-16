@@ -1,174 +1,178 @@
 #!/usr/bin/perl
 
+# ABSTRACT: flock-style distributed locks and semaphores
+
+use strict;
+use warnings;
+
+use App::Switchman;
+
+App::Switchman->new(\@ARGV)->run;
+
+
+__END__
+
 =head1 NAME
 
 switchman
 
 =head1 USAGE
 
-    switchman --config /path/to/CONFIG --group GROUP [--lockname LOCKNAME] -- CMD [ARGS]
+    switchman [OPTIONS] -- CMD [ARGS]
 
-    CONFIG file is expected to be a json string with keys
-        - prefix  -- node path, contains configuration data and lock nodes
-        - zkhosts -- where to connect
-    Example:
-        {"zkhosts":"zk1:2181,zk2:2181,zk3:2181", "prefix":"/switchman"}
+To use switchman you need a ZooKeeper installation.
 
-    GROUP must be one of the groups described in zk
+You have to create the top level znode for switchman (e.g. /myproject/switchman)
+by yourself.
+This znode is also used to store the data that describes groups.
 
-    LOCKNAME can be specifed as an option, by default basename of CMD is used
+=head2 OPTIONS
+
+=over 4
+
+=item -c|--config /path/to/config
+
+Optional, default is /etc/switchman.conf
+
+The file is expected to contain a json-encoded hash with the following keys:
+
+    prefix: path to top level znode that contains group data and other nodes
+    zkhosts: ZooKeeper servers to connect to
+
+Example:
+
+    {
+        "prefix":"/myproject/switchman",
+        "zkhosts":"zk1:2181,zk2:2181,zk3:2181",
+        "loglevel":"info",
+        "logfile":"/path/to/log"
+    }
+
+=item -g|--group group_name
+
+Optional, if specified must be one of the groups described in prefix znode.
+
+By providing this option you can ensure that CMD will be executed only if
+the current host is specified in group description.
+
+Example (data stored prefix znode):
+
+    {"groups":{"group1":["host1", "host2"], "group2":"host1"}}
+
+Then if you execute
+    
+    user@host2$ switchman -g group2 -- CMD
+
+switchman will exit immediately.
+
+Note: all host names MUST be fqdns.
+
+=item --lease resource=count:total
+
+Optional, multiple leases for different resources are supported.
+
+Before acquiring the lock switchman will ensure that all leases are acquired in
+the order specified in prefix znode.
+
+Example (data stored prefix znode):
+
+    {"resources": ["FQDN_mem", "FQDN_cpu"]}
+
+Processes wait for resources in fair queues, watching for the lock to appear.
+If the lock appears, all enqueued processes that were watching for it will exit.
+
+A persistent node /myproject/switchman/semaphores/resource is created.
+
+The following macros for this option are supported: CPU, FQDN, MEMMB.
+CPU is expanded into a number of cpu cores as reported by Sys::CPU.
+FQDN is expanded into the current host's fqdn.
+MEMMB is expanded into total amount of physical memory in megabytes.
+
+You can use strings representing Perl expressions for "count" and "total"
+parameters, but make sure these expressions return an integer value when evaled:
+
+    --lease FQDN_mem='4:int(MEMMB/1024)' # leases 4 GB
+
+=item --lockname name
+
+Optional, default is CMD's basename.
+
+A name for a lock to be acquired in ZooKeeper.
+
+Lock is implemented as an ephemeral node /myproject/switchman/locks/name
+
+=item -h|--help
+
+Show this help and exit.
+
+=back
 
 =head1 DESCRIPTION
 
-The purpose of this tool is organizing distributed job execution.
+This utility manages distributed locks and semaphores in ZooKeeper and can be
+used for organizing distributed job execution.
 
-Jobs are to be divided into groups, each group is described by a list of
-hostnames, where execution is allowed at the moment. This configuration is
-stored in ZooKeeper.
+It is not a scheduler, you still need something (e.g. cron) to launch your jobs.
 
-Simultaneous execution of same commands is avoided by acquiring a lock in
-ZooKeeper (under the same node that holds the configuration data).
-Though, it is still possible to provide different lock names and to run more
-than one copy of the same command, if it is necessary.
-For more details on locks see [1].
+The command is run only if all specified leases and the named lock are acquired.
 
-While the command is running, a separate process regularly checks if the lock
-still exists and that group description hasn't been changed. If any of these
-checks fails, the command is terminated.
+You can restrict job execution to a set of hosts, see --group option.
 
-[1] http://zookeeper.apache.org/doc/r3.4.4/recipes.html#sc_recipes_Locks
+switchman forks and execs the command in the child process, while parent process
+regularly checks if the lock still exists and that group description still lists
+the current host (given that the --group option was provided on start).
+If any of these checks fail, the command is terminated.
 
-=cut
+=head1 EXAMPLES
 
-use strict;
-use warnings;
+=over 4
 
-use App::Switchman;
-use Net::ZooKeeper qw(:errors);
-use Net::ZooKeeper::Lock;
-use POSIX qw(WNOHANG);
-use Pod::Usage;
-use Sys::Hostname::FQDN qw(fqdn);
+=item Simple locking
 
-my $options = App::Switchman::process_arguments(\@ARGV);
+    switchman -- cmd
 
-usage() if $options->{help};
-my $CONFIG_PATH = $options->{CONFIG_PATH};
-my $GROUP = $options->{GROUP};
-my $LOCKNAME = $options->{LOCKNAME} or die "See $0 --help\n";
-die "--config is missing\n" unless $CONFIG_PATH;
-die "--group is missing\n" unless $GROUP;
-die "lockname is too long: $LOCKNAME\n" if length($LOCKNAME) > 512; # safe limit, ZooKeeper can handle path length up to 1024
+ensures that only one instance of cmd will be run at the same time
 
-my $config = App::Switchman::get_and_check_config($CONFIG_PATH);
+=item Queueing (e.g. rolling release)
 
-# OK to start
+    switchman --lockname $(hostname)-rr --lease rr=1:1 -- restart-cmd
 
-my $zkh = Net::ZooKeeper->new($config->{zkhosts});
-my $data_watch = $zkh->watch();
-my $data = $zkh->get($config->{prefix}, watch => $data_watch) or die 'Could not get data: '.$zkh->get_error();
+queues up for exclusive lease of resource "rr", acquires a lock with a name
+specific to the given host when the lease is acquired
 
-unless (App::Switchman::is_group_serviced($GROUP, $data)) {
-    App::Switchman::debug("Group <$GROUP> is not serviced at the moment");
-    exit;
-}
+=item Leasing local resources
 
-my $lock = Net::ZooKeeper::Lock->new({
-    blocking => 0,
-    data => fqdn()." $$",
-    lock_name => $LOCKNAME,
-    lock_prefix => $config->{prefix},
-    zkh => $zkh,
-});
+    switchman --lease FQDN_cpu=1:CPU --lease FQDN_mem=4096:MEMMB -- cmd
 
-unless ($lock) {
-    my $error = $zkh->get_error();
-    if ($error > ZAPIERROR) {
-        warn "Could not acquire lock for <$LOCKNAME>: $error";
-    }
-    exit;
-}
+leases 1 cpu core, 4 GB of memory (exclusive lock is also acquired)
 
-my $lock_watch = $zkh->watch();
-$zkh->exists($lock->lock_path, watch => $lock_watch);
+=item Using groups
 
-# We gonna create a single child process
-# and help it die properly
-our $CHILD;
+If you don't need your jobs to be distributed by several servers, you can limit
+a group to a single host and assign your jobs to this group by running them with
+the --group option.
+Later when you need to change the host where the jobs are to be executed, you
+can change the configuration in ZooKeeper.
+You don't even need to have access to the hosts your scripts are installed on,
+which is critical in case of network split.
 
-# we want to exit right after our child dies
-$SIG{CHLD} = sub {
-    my $pid;
-    do {
-        $pid = waitpid -1, WNOHANG;
-        if ($pid > 0) {
-            warn "Child $pid exited with $?" if $?;
-            # THE exit
-            exit $?;
-        }
-    } while $pid > 0;
-};
+=back
 
-# If we suddenly die, we won't leave our child alone.
-# Otherwise the process will be active and not holding the lock.
-$SIG{__DIE__} = sub {
-    if ($CHILD && kill 0 => $CHILD) {
-        warn "Parent is terminating abnormally, killing child $CHILD";
-        $SIG{CHLD} = "IGNORE";
-        kill 9 => $CHILD or warn "Failed to KILL $CHILD";
-    }
-};
+=head1 SEE ALSO
 
-$CHILD = fork();
-die "Could not fork" unless defined $CHILD;
-if ($CHILD) {
-    while (1) {
-        if ($lock_watch->{state}) {
-            warn "It's not secure to proceed, lock watch received $lock_watch->{event}";
-            App::Switchman::stop_child($CHILD);
-            last;
-        }
-        if ($data_watch->{state}) {
-            my $new_data = $zkh->get($config->{prefix}, watch => $data_watch) or die 'Could not get data: '.$zkh->get_error();
-            unless (App::Switchman::is_group_serviced($GROUP, $new_data)) {
-                App::Switchman::debug("Group <$GROUP> is not serviced by current host anymore");
-                App::Switchman::stop_child($CHILD);
-                last;
-            }
-        }
-        sleep 1;
-    }
-} else {
-    # prevent calling zk_delete in $lock->DESTROY - it hangs forever and SIGCHLD never happens
-    # let the parent unlock the node
-    {
-        no warnings 'redefine';
-        *Net::ZooKeeper::Lock::DESTROY = sub {};
-    }
-    exec(@ARGV) or die "Failed to exec <".join(' ', @ARGV).">: $!\n";
-}
-
-
-=head2 usage
-
-Shows help and exits
-
-=cut
-
-sub usage
-{
-    pod2usage(-verbose => 99, -sections => [qw(USAGE DESCRIPTION)]);
-    exit 1;
-}
-
-
-__END__
+    man 1 flock
+    http://zookeeper.apache.org/
+    https://github.com/noxiouz/python-flock
 
 =head1 COPYRIGHT AND LICENSE
 
-This software is copyright (c) 2012 by Yandex LLC.
+This software is copyright (c) 2012-2013 by Yandex LLC.
 
 This is free software; you can redistribute it and/or modify it under
 the same terms as the Perl 5 programming language system itself.
+
+=head1 AUTHOR
+
+  Oleg Komarov <komarov@cpan.org>
 
 =cut

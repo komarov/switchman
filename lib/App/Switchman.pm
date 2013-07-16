@@ -1,5 +1,7 @@
 package App::Switchman;
 
+our $VERSION = '1.00';
+
 =head1 NAME
 
 App::Switchman
@@ -17,28 +19,554 @@ use File::Basename qw(basename);
 use File::Slurp;
 use Getopt::Long qw(GetOptionsFromArray);
 use JSON;
+use Linux::MemInfo;
+use List::Util qw(min);
+use Log::Dispatch;
+use Moo;
+use Net::ZooKeeper qw(:acls :errors :events :node_flags);
+use Net::ZooKeeper::Semaphore;
+use Pod::Usage;
+use POSIX qw(WNOHANG strftime);
+use Sys::CPU;
 use Sys::Hostname::FQDN qw(fqdn);
 
 
-=head2 debug
+our $DEFAULT_CONFIG_PATH ||= "/etc/switchman.conf";
+our $LOCKS_PATH ||= 'locks';
+our $QUEUES_PATH ||= 'queues';
+our $SEMAPHORES_PATH ||= 'semaphores';
 
-Produces a warn if DEBUG is set in ENV
 
-=cut
+has command => (is => 'ro', required => 1);
+has group => (is => 'ro');
+has leases => (is => 'ro');
+has lock_path => (
+    is => 'ro',
+    lazy => 1,
+    builder => sub {join '/', $_[0]->prefix, $LOCKS_PATH, $_[0]->lockname},
+);
+has lock_watch => (
+    is => 'ro',
+    lazy => 1,
+    builder => sub {$_[0]->zkh->watch},
+);
+has lockname => (
+    is => 'ro',
+    isa => sub {die "lockname is too long: $_[0]" if length($_[0]) > 512},
+    required => 1,
+);
+has log => (is => 'ro', lazy => 1, builder => 1);
+has logfile => (is => 'ro');
+has loglevel => (is => 'ro');
+has prefix => (
+    is => 'ro',
+    isa => sub {die "bad prefix: $_[0]" unless $_[0] =~ m{^(?:/[^/]+)+$}},
+    required => 1,
+);
+has prefix_data => (is => 'rw');
+has prefix_data_watch => (
+    is => 'ro',
+    lazy => 1,
+    builder => sub {$_[0]->zkh->watch},
+);
+has queue_positions => (
+    is => 'ro',
+    default => sub {+{}},
+);
+has zkh => (
+    is => 'ro',
+    lazy => 1,
+    builder => sub {Net::ZooKeeper->new($_[0]->zkhosts)},
+);
+has zkhosts => (is => 'ro', required => 1);
 
-sub debug
+
+sub BUILDARGS
 {
-    warn @_ if $ENV{DEBUG};
+    my $class = shift;
+    my $arguments = shift;
+
+    return $arguments if ref $arguments eq 'HASH';
+
+    my %options = ();
+    my $config_path;
+    my $leases = {};
+    GetOptionsFromArray(
+        $arguments,
+        'c|config=s' => \$config_path,
+        'g|group=s' => \$options{group},
+        'h|help' => \&usage,
+        'lease=s' => $leases,
+        'lockname=s' => \$options{lockname},
+        'v|version' => \&version,
+    ) or die "Couldn't parse options, see $0 -h for help\n";
+
+    if ($arguments->[0]) {
+        $options{lockname} ||= basename($arguments->[0]);
+    }
+    $options{command} = [@$arguments];
+
+    $options{leases} = {};
+    for my $resource (keys %$leases) {
+        my ($count, $total) = split /:/, _process_resource_macro($leases->{$resource}), 2;
+        $options{leases}->{_process_resource_macro($resource)} = {
+            count => eval $count,
+            total => eval $total,
+        };
+    }
+
+    if (!$config_path && -f $DEFAULT_CONFIG_PATH) {
+        $config_path = $DEFAULT_CONFIG_PATH;
+    }
+    die "$DEFAULT_CONFIG_PATH is absent and --config is missing, see $0 -h for help\n" unless $config_path;
+    my $config = _get_and_check_config($config_path);
+    for my $key (qw/logfile loglevel prefix zkhosts/) {
+        $options{$key} = $config->{$key};
+    }
+
+    return \%options;
 }
 
 
-=head2 get_and_check_config
+sub BUILD
+{
+    my $self = shift;
 
-Dies if config is invalid
+    $self->load_prefix_data;
+
+    my %resources = map {$_ => 1} $self->get_resources;
+    my @unknown_resources = grep {!exists $resources{$_}} keys %{$self->leases};
+    $self->log->log_and_die(level => 'critical', message => "Unknown resources: ".join(', ', @unknown_resources)) if @unknown_resources;
+}
+
+
+sub _build_log
+{
+    my $self = shift;
+
+    return Log::Dispatch->new(
+        outputs => [
+            [
+                'Screen',
+                min_level => $ENV{DEBUG} ? 'debug' : 'warning',
+                stderr => 1,
+                newline => 1,
+            ],
+            $self->logfile ? [
+                'File',
+                min_level => $self->loglevel || 'info',
+                filename => $self->logfile,
+                mode => '>>',
+                newline => 1,
+                binmode => ':encoding(UTF-8)',
+                format => '[%d] [%p] %m at %F line %L%n',
+            ] : (),
+        ],
+        callbacks => sub {my %p = @_; return join "\t", strftime("%Y-%m-%d %H:%M:%S", localtime(time)), "[$$]", $p{message};},
+    );
+}
+
+
+=head1 METHODS
+
+=head2 acquire_semaphore
+
+Acquires semaphore for a given resource
 
 =cut
 
-sub get_and_check_config
+sub acquire_semaphore
+{
+    my $self = shift;
+    my $resource = shift;
+
+    return Net::ZooKeeper::Semaphore->new(
+        count => $self->leases->{$resource}->{count},
+        data => _node_data(),
+        path => $self->prefix."/$SEMAPHORES_PATH/$resource",
+        total => $self->leases->{$resource}->{total},
+        zkh => $self->zkh,
+    );
+}
+
+
+=head2 get_lock
+
+Creates a named lock in ZooKeeper
+Returns undef is lock already exists, otherwise returns true and sets lock_watch
+
+=cut
+
+sub get_lock
+{
+    my $self = shift;
+
+    my $lock_path = $self->zkh->create($self->lock_path, _node_data(),
+        acl => ZOO_OPEN_ACL_UNSAFE,
+        flags => ZOO_EPHEMERAL,
+    );
+    if (my $error = $self->zkh->get_error) {
+        if ($error == ZNODEEXISTS) {
+            return undef;
+        } else {
+            $self->log->log_and_die(level => 'critical', message => sprintf("Could not acquire lock %s: %s", $self->lockname, $error));
+        }
+    }
+    return $self->zkh->exists($lock_path, watch => $self->lock_watch);
+}
+
+
+=head2 get_queue_path
+
+Returns queue path for a given resource
+
+=cut
+
+sub get_queue_path
+{
+    my $self = shift;
+    my $resource = shift;
+
+    return $self->prefix."/$QUEUES_PATH/$resource";
+}
+
+
+=head2 get_resources
+
+Returns resource names listed in ZooKeeper
+Macros are processed
+
+=cut
+
+sub get_resources
+{
+    my $self = shift;
+
+    my $resources = eval {from_json($self->prefix_data)->{resources}} || [];
+    return map {_process_resource_macro($_)} @$resources;
+}
+
+
+=head2 is_group_serviced
+
+Determines if execution is allowed on the current host
+
+=cut
+
+sub is_group_serviced
+{
+    my $self = shift;
+
+    my $hosts = eval {from_json($self->prefix_data)->{groups}->{$self->group}} or $self->log->log_and_die(level => 'critical', message => sprintf "Group <%s> is not described", $self->group);
+    my $fqdn = fqdn();
+    my $is_serviced = scalar grep {$fqdn eq $_} ref $hosts ? @$hosts : ($hosts);
+    return $is_serviced;
+}
+
+
+=head2 is_task_in_queue
+
+Checks if task is already queue up for a given resource
+
+=cut
+
+sub is_task_in_queue
+{
+    my $self = shift;
+    my $resource = shift;
+
+    my $re = quotemeta($self->lockname).'-\d+';
+    my $is_in_queue = scalar grep {$_ =~ /^$re$/} $self->zkh->get_children($self->get_queue_path($resource));
+    if ($self->zkh->get_error && $self->zkh->get_error != ZNONODE) {
+        $self->log->log_and_die(level => 'critical', message => "Could not check queue for <$resource>: ".$self->zkh->get_error);
+    }
+    $self->log->debug(sprintf "Task <%s> is already queued up for resource <%s>", $self->lockname, $resource) if $is_in_queue;
+    return $is_in_queue;
+}
+
+
+=head2 leave_queues
+
+Leaves all resource queues
+
+=cut
+
+sub leave_queues
+{
+    my $self = shift;
+
+    for my $resource (keys %{$self->queue_positions}) {
+        my $position = $self->queue_positions->{$resource};
+        $self->zkh->delete($position);
+        if ($self->zkh->get_error) {
+            $self->log->log_and_die(level => 'critical', message => "Could not delete <$position>: ".$self->zkh->get_error);
+        }
+        delete $self->queue_positions->{$resource};
+    }
+}
+
+
+=head2 load_prefix_data
+
+Loads data from prefix znode
+Sets prefix_data_watch
+
+=cut
+
+sub load_prefix_data
+{
+    my $self = shift;
+
+    my $data = $self->zkh->get($self->prefix, watch => $self->prefix_data_watch);
+    if ($self->zkh->get_error) {
+        $self->log->log_and_die(level => 'critical', message => 'Could not get data: '.$self->zkh->get_error);
+    }
+    $self->prefix_data($data);
+}
+
+
+=head2 prepare_zknodes
+
+Ensures existence of subnodes we use
+
+=cut
+
+sub prepare_zknodes
+{
+    my $self = shift;
+    my $nodes = shift;
+
+    for my $path (@$nodes) {
+        unless ($self->zkh->exists($path)) {
+            $self->zkh->create($path, _node_data(),
+                acl => ZOO_OPEN_ACL_UNSAFE,
+            ) or $self->log->log_and_die(level => 'critical', message => "Failed to prepare $path: ".$self->zkh->get_error);
+        }
+    }
+}
+
+
+=head2 queue_up
+
+Puts task in queue for resource
+Returns queue item path
+
+=cut
+
+sub queue_up
+{
+    my $self = shift;
+    my $resource = shift;
+
+    my $queue_path = $self->get_queue_path($resource);
+    $self->prepare_zknodes([$queue_path]);
+    my $item_path = $self->zkh->create(sprintf("%s/%s-", $queue_path, $self->lockname), _node_data(),
+        acl => ZOO_OPEN_ACL_UNSAFE,
+        flags => (ZOO_EPHEMERAL | ZOO_SEQUENCE),
+    );
+    if ($self->zkh->get_error) {
+        $self->log->log_and_die(level => 'critical', message => sprintf("Could not push task <%s> in queue for <%s>: %s", $self->lockname, $resource, $self->zkh->get_error));
+    }
+    $self->queue_positions->{$resource} = $item_path;
+    return $item_path;
+}
+
+
+=head2 run
+
+Application loop
+Never returns
+
+=cut
+
+sub run
+{
+    my $self = shift;
+
+    $self->prepare_zknodes([$self->prefix, map {$self->prefix."/$_"} ($LOCKS_PATH, $QUEUES_PATH, $SEMAPHORES_PATH)]);
+
+    if ($self->group && !$self->is_group_serviced) {
+        $self->log->debug(sprintf "Group <%s> is not serviced at the moment", $self->group);
+        exit;
+    }
+
+    if ($self->zkh->exists($self->lock_path, watch => $self->lock_watch)) {
+        $self->log->info(sprintf "Lock %s already exists", $self->lock_path);
+        exit;
+    }
+
+    my @resources = grep {exists $self->leases->{$_}} $self->get_resources;
+    for my $resource (@resources) {
+        if ($self->is_task_in_queue($resource)) {
+            exit;
+        } else {
+            $self->queue_up($resource);
+        }
+    }
+
+    my @semaphores = ();
+    for my $resource (@resources) {
+        $self->wait_in_queue($resource);
+        # try to acquire a semaphore until success
+        while (1) {
+            if ($self->lock_watch->{state}) {
+                $self->log->info(sprintf "Lock watch received %s while waiting for $resource semaphore, we exit", $self->lock_watch->{event});
+                exit;
+            }
+            my $semaphore = $self->acquire_semaphore($resource);
+            if ($semaphore) {
+                push @semaphores, $semaphore;
+                last;
+            }
+            sleep 1;
+        }
+    }
+
+    unless ($self->get_lock) {
+        $self->log->info(sprintf "Lock %s already exists", $self->lockname);
+        exit;
+    }
+
+    $self->leave_queues;
+
+    # We want to exit right after our child dies
+    $SIG{CHLD} = sub {
+        my $pid;
+        do {
+            $pid = waitpid -1, WNOHANG;
+            if ($pid > 0) {
+                $self->log->warn("Child $pid exited with $?") if $?;
+                # THE exit
+                exit $?;
+            }
+        } while $pid > 0;
+    };
+
+    my $CHILD;
+
+    # If we suddenly die, we won't leave our child alone
+    # Otherwise the process will be active and not holding the lock
+    $SIG{__DIE__} = sub {
+        if ($CHILD && kill 0 => $CHILD) {
+            $self->log->warn("Parent is terminating abnormally, killing child $CHILD");
+            $SIG{CHLD} = "IGNORE";
+            kill 9 => $CHILD or $self->log->warn("Failed to KILL $CHILD");
+        }
+    };
+
+    $CHILD = fork();
+    $self->log->log_and_die(level => 'critical', message => "Could not fork") unless defined $CHILD;
+
+    if ($CHILD) {
+        while (1) {
+            if ($self->lock_watch->{state}) {
+                $self->log->warn("It's not secure to proceed, lock watch received ".$self->lock_watch->{event});
+                $self->_stop_child($CHILD);
+                last;
+            }
+            if ($self->group && $self->prefix_data_watch->{state}) {
+                $self->load_prefix_data;
+                unless ($self->is_group_serviced) {
+                    $self->log->info(sprintf "Group <%s> is not serviced by the current host anymore", $self->group);
+                    $self->_stop_child($CHILD);
+                    last;
+                }
+            }
+            sleep 1;
+        }
+    } else {
+        $self->run_command;
+    }
+}
+
+
+=head2 run_command
+
+Execs command
+
+=cut
+
+sub run_command
+{
+    my $self = shift;
+
+    my $command = join(' ', @{$self->command});
+    $self->log->info("Executing <$command>");
+    exec(@{$self->command}) or $self->log->log_and_die(level => 'critical', message => "Failed to exec <$command>: $!");
+}
+
+
+=head2 usage
+
+Shows help and exits
+
+=cut
+
+sub usage
+{
+    pod2usage(-verbose => 99, -sections => [qw(USAGE DESCRIPTION EXAMPLES), 'SEE ALSO', 'COPYRIGHT AND LICENSE']);
+    exit 1;
+}
+
+
+=head2 version
+
+Shows version info and exits
+
+=cut
+
+sub version
+{
+    print "switchman $VERSION\n";
+    pod2usage(-verbose => 99, -sections => ['COPYRIGHT AND LICENSE']);
+    exit 1;
+}
+
+
+=head2 wait_in_queue
+
+Waits in queue for a given resource
+
+=cut
+
+sub wait_in_queue
+{
+    my $self = shift;
+    my $resource = shift;
+
+    my $queue_path = $self->prefix."/$QUEUES_PATH/$resource";
+    my $queue_position = $self->queue_positions->{$resource} or $self->log->log_and_die(level => 'critical', message => "queue position for <$resource> is not initialized");
+    my ($position) = $queue_position =~ /-(\d+)$/;
+
+    while (1) {
+        my @items = $self->zkh->get_children($queue_path);
+        if ($self->zkh->get_error) {
+            $self->log->log_and_die(level => 'critical', message => "Could not get items in queue $queue_path: ".$self->zkh->get_error);
+        }
+        my %positions;
+        for my $item (@items) {
+            if ($item =~ /-(\d+)$/) {
+                $positions{$1} = $item;
+            } else {
+                $self->log->log_and_die(level => 'critical', message => "Unexpected item <$item> in queue $queue_path");
+            }
+        }
+        my $first = min keys %positions;
+        return if $first eq $position;
+
+        my $first_watch = $self->zkh->watch();
+        my $first_exists = $self->zkh->exists("$queue_path/$positions{$first}", watch => $first_watch);
+        if ($self->zkh->get_error) {
+            $self->log->log_and_die(level => 'critical', message => "Could not check $positions{$first} existence: ".$self->zkh->get_error);
+        }
+        if ($first_exists) {
+            $first_watch->wait;
+        }
+    }
+}
+
+
+sub _get_and_check_config
 {
     my $config_path = shift;
 
@@ -53,62 +581,31 @@ sub get_and_check_config
 }
 
 
-=head2 is_group_serviced
-
-Determines if execution is allowed on current host
-
-=cut
-
-sub is_group_serviced
+sub _node_data
 {
-    my ($group, $data) = @_;
-
-    $data = from_json $data;
-    my $hosts = eval {$data->{groups}->{$group}} or die "Group <$group> is not described";
-    my $fqdn = fqdn();
-    return scalar grep {$fqdn eq $_} ref $hosts ? @$hosts : ($hosts);
+    return fqdn()." $$";
 }
 
 
-=head2 process_arguments
-
-Returns hashref with keys
-    CONFIG_PATH
-    GROUP
-    LOCKNAME
-    help
-
-=cut
-
-sub process_arguments
+sub _process_resource_macro
 {
-    my $arguments = shift;
-
-    my %options = ();
-    GetOptionsFromArray(
-        $arguments,
-        'config=s' => \$options{CONFIG_PATH},
-        'group=s' => \$options{GROUP},
-        'help' => \$options{help},
-        'lockname=s' => \$options{LOCKNAME},
-    ) or die "Couldn't parse options\n";
-
-    if ($arguments->[0]) {
-        $options{LOCKNAME} ||= basename($arguments->[0]);
-    }
-
-    return \%options;
+    my $string = shift;
+    
+    my %mem_info = Linux::MemInfo::get_mem_info();
+    my %expand = (
+        CPU => Sys::CPU::cpu_count(),
+        FQDN => fqdn(),
+        MEMMB => int($mem_info{MemTotal} / 1024),
+    );
+    my $re = join '|', keys %expand;
+    $string =~ s/($re)/$expand{$1}/eg;
+    return $string;
 }
 
 
-=head2 stop_child
-
-Kills child process
-
-=cut
-
-sub stop_child
+sub _stop_child
 {
+    my $self = shift;
     my $pid = shift;
 
     kill TERM => $pid or die "Failed to TERM $pid";
@@ -127,7 +624,7 @@ __END__
 
 =head1 COPYRIGHT AND LICENSE
 
-This software is copyright (c) 2012 by Yandex LLC.
+This software is copyright (c) 2012-2013 by Yandex LLC.
 
 This is free software; you can redistribute it and/or modify it under
 the same terms as the Perl 5 programming language system itself.

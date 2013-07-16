@@ -1,0 +1,30 @@
+1.00    Mon, 15 Jul 15 2013
+        + resource leasing support
+        * OO-interface for App::Switchman
+        * default config at /etc/switchman.conf
+        * group option is no longer required
+
+0.08    Wed, 13 Feb 2013
+        + scripts for monitoring
+
+0.07    Tue, 12 Feb 2013
+        * improved logging
+
+0.06    Fri, 08 Feb 2013
+        + logfile and loglevel in config
+        * Log::Dispatch dependency
+
+0.05    Mon, 19 Nov 2012
+        * cache fqdn() result
+
+0.04    Thu, 15 Nov 2012
+        * improved cmd arguments handling
+
+0.03    Thu, 15 Nov 2012
+        + App::Switchman
+
+0.02    Mon, 05 Nov 2012
+        + store hostname and pid in lock znode
+
+0.01    Wed, 24 Oct 2012
+        initial release
