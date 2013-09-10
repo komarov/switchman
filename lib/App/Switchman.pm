@@ -1,6 +1,6 @@
 package App::Switchman;
 
-our $VERSION = '1.00';
+our $VERSION = '1.01';
 
 =head1 NAME
 
@@ -52,7 +52,10 @@ has lock_watch => (
 );
 has lockname => (
     is => 'ro',
-    isa => sub {die "lockname is too long: $_[0]" if length($_[0]) > 512},
+    isa => sub {
+        die "lockname is too long: $_[0]" if length($_[0]) > 512;
+        die "lockname must not contain '/'" if index($_[0], '/') != -1;
+    },
     required => 1,
 );
 has log => (is => 'ro', lazy => 1, builder => 1);
@@ -87,6 +90,7 @@ sub BUILDARGS
     my $arguments = shift;
 
     return $arguments if ref $arguments eq 'HASH';
+    die "Bad constructor arguments: hashref or arrayref expected" unless ref $arguments eq 'ARRAY';
 
     my %options = ();
     my $config_path;
@@ -101,9 +105,8 @@ sub BUILDARGS
         'v|version' => \&version,
     ) or die "Couldn't parse options, see $0 -h for help\n";
 
-    if ($arguments->[0]) {
-        $options{lockname} ||= basename($arguments->[0]);
-    }
+    die "No command provided" unless @$arguments;
+    $options{lockname} ||= basename($arguments->[0]);
     $options{command} = [@$arguments];
 
     $options{leases} = {};
@@ -135,8 +138,9 @@ sub BUILD
     $self->load_prefix_data;
 
     my %resources = map {$_ => 1} $self->get_resources;
-    my @unknown_resources = grep {!exists $resources{$_}} keys %{$self->leases};
-    $self->log->log_and_die(level => 'critical', message => "Unknown resources: ".join(', ', @unknown_resources)) if @unknown_resources;
+    if (my @unknown_resources = grep {!exists $resources{$_}} keys %{$self->leases}) {
+        $self->_error("Unknown resources: ".join(', ', @unknown_resources));
+    }
 }
 
 
@@ -209,7 +213,7 @@ sub get_lock
         if ($error == ZNODEEXISTS) {
             return undef;
         } else {
-            $self->log->log_and_die(level => 'critical', message => sprintf("Could not acquire lock %s: %s", $self->lockname, $error));
+            $self->_error(sprintf("Could not acquire lock %s: %s", $self->lockname, $error));
         }
     }
     return $self->zkh->exists($lock_path, watch => $self->lock_watch);
@@ -257,7 +261,7 @@ sub is_group_serviced
 {
     my $self = shift;
 
-    my $hosts = eval {from_json($self->prefix_data)->{groups}->{$self->group}} or $self->log->log_and_die(level => 'critical', message => sprintf "Group <%s> is not described", $self->group);
+    my $hosts = eval {from_json($self->prefix_data)->{groups}->{$self->group}} or $self->_error(sprintf "Group <%s> is not described", $self->group);
     my $fqdn = fqdn();
     my $is_serviced = scalar grep {$fqdn eq $_} ref $hosts ? @$hosts : ($hosts);
     return $is_serviced;
@@ -278,7 +282,7 @@ sub is_task_in_queue
     my $re = quotemeta($self->lockname).'-\d+';
     my $is_in_queue = scalar grep {$_ =~ /^$re$/} $self->zkh->get_children($self->get_queue_path($resource));
     if ($self->zkh->get_error && $self->zkh->get_error != ZNONODE) {
-        $self->log->log_and_die(level => 'critical', message => "Could not check queue for <$resource>: ".$self->zkh->get_error);
+        $self->_error("Could not check queue for <$resource>: ".$self->zkh->get_error);
     }
     $self->log->debug(sprintf "Task <%s> is already queued up for resource <%s>", $self->lockname, $resource) if $is_in_queue;
     return $is_in_queue;
@@ -298,8 +302,8 @@ sub leave_queues
     for my $resource (keys %{$self->queue_positions}) {
         my $position = $self->queue_positions->{$resource};
         $self->zkh->delete($position);
-        if ($self->zkh->get_error) {
-            $self->log->log_and_die(level => 'critical', message => "Could not delete <$position>: ".$self->zkh->get_error);
+        if (my $error = $self->zkh->get_error) {
+            $self->_error("Could not delete <$position>: $error");
         }
         delete $self->queue_positions->{$resource};
     }
@@ -318,8 +322,8 @@ sub load_prefix_data
     my $self = shift;
 
     my $data = $self->zkh->get($self->prefix, watch => $self->prefix_data_watch);
-    if ($self->zkh->get_error) {
-        $self->log->log_and_die(level => 'critical', message => 'Could not get data: '.$self->zkh->get_error);
+    if (my $error = $self->zkh->get_error) {
+        $self->_error("Could not get data: $error");
     }
     $self->prefix_data($data);
 }
@@ -340,7 +344,7 @@ sub prepare_zknodes
         unless ($self->zkh->exists($path)) {
             $self->zkh->create($path, _node_data(),
                 acl => ZOO_OPEN_ACL_UNSAFE,
-            ) or $self->log->log_and_die(level => 'critical', message => "Failed to prepare $path: ".$self->zkh->get_error);
+            ) or $self->_error("Failed to prepare $path: ".$self->zkh->get_error);
         }
     }
 }
@@ -364,8 +368,8 @@ sub queue_up
         acl => ZOO_OPEN_ACL_UNSAFE,
         flags => (ZOO_EPHEMERAL | ZOO_SEQUENCE),
     );
-    if ($self->zkh->get_error) {
-        $self->log->log_and_die(level => 'critical', message => sprintf("Could not push task <%s> in queue for <%s>: %s", $self->lockname, $resource, $self->zkh->get_error));
+    if (my $error = $self->zkh->get_error) {
+        $self->_error(sprintf("Could not push task <%s> in queue for <%s>: %s", $self->lockname, $resource, $error));
     }
     $self->queue_positions->{$resource} = $item_path;
     return $item_path;
@@ -431,15 +435,11 @@ sub run
 
     # We want to exit right after our child dies
     $SIG{CHLD} = sub {
-        my $pid;
-        do {
-            $pid = waitpid -1, WNOHANG;
-            if ($pid > 0) {
-                $self->log->warn("Child $pid exited with $?") if $?;
-                # THE exit
-                exit $?;
-            }
-        } while $pid > 0;
+        my $pid = wait;
+        my $exit_code = $? >> 8;
+        $self->log->warn("Child $pid exited with $exit_code") if $exit_code;
+        # THE exit
+        exit $exit_code;
     };
 
     my $CHILD;
@@ -447,15 +447,28 @@ sub run
     # If we suddenly die, we won't leave our child alone
     # Otherwise the process will be active and not holding the lock
     $SIG{__DIE__} = sub {
+        my $msg = shift;
+        chomp $msg;
         if ($CHILD && kill 0 => $CHILD) {
-            $self->log->warn("Parent is terminating abnormally, killing child $CHILD");
-            $SIG{CHLD} = "IGNORE";
+            $self->log->warn("Parent is terminating abnormally ($msg), killing child $CHILD");
             kill 9 => $CHILD or $self->log->warn("Failed to KILL $CHILD");
+        }
+    };
+    $SIG{TERM} = $SIG{INT} = sub {
+        my $signame = shift;
+        warn "Parent received SIG$signame, terminating child $CHILD\n";
+        if (kill $signame => $CHILD) {
+            warn "Sent $signame to $CHILD\n";
+        }
+        if (kill 0 => $CHILD) {
+            warn "Failed to $signame $CHILD\n";
+        } else {
+            exit;
         }
     };
 
     $CHILD = fork();
-    $self->log->log_and_die(level => 'critical', message => "Could not fork") unless defined $CHILD;
+    $self->_error("Could not fork") unless defined $CHILD;
 
     if ($CHILD) {
         while (1) {
@@ -492,7 +505,7 @@ sub run_command
 
     my $command = join(' ', @{$self->command});
     $self->log->info("Executing <$command>");
-    exec(@{$self->command}) or $self->log->log_and_die(level => 'critical', message => "Failed to exec <$command>: $!");
+    exec(@{$self->command}) or $self->_error("Failed to exec <$command>: $!");
 }
 
 
@@ -535,20 +548,20 @@ sub wait_in_queue
     my $resource = shift;
 
     my $queue_path = $self->prefix."/$QUEUES_PATH/$resource";
-    my $queue_position = $self->queue_positions->{$resource} or $self->log->log_and_die(level => 'critical', message => "queue position for <$resource> is not initialized");
+    my $queue_position = $self->queue_positions->{$resource} or $self->_error("queue position for <$resource> is not initialized");
     my ($position) = $queue_position =~ /-(\d+)$/;
 
     while (1) {
         my @items = $self->zkh->get_children($queue_path);
-        if ($self->zkh->get_error) {
-            $self->log->log_and_die(level => 'critical', message => "Could not get items in queue $queue_path: ".$self->zkh->get_error);
+        if (my $error = $self->zkh->get_error) {
+            $self->_error("Could not get items in queue $queue_path: $error");
         }
         my %positions;
         for my $item (@items) {
             if ($item =~ /-(\d+)$/) {
                 $positions{$1} = $item;
             } else {
-                $self->log->log_and_die(level => 'critical', message => "Unexpected item <$item> in queue $queue_path");
+                $self->_error("Unexpected item <$item> in queue $queue_path");
             }
         }
         my $first = min keys %positions;
@@ -556,13 +569,22 @@ sub wait_in_queue
 
         my $first_watch = $self->zkh->watch();
         my $first_exists = $self->zkh->exists("$queue_path/$positions{$first}", watch => $first_watch);
-        if ($self->zkh->get_error) {
-            $self->log->log_and_die(level => 'critical', message => "Could not check $positions{$first} existence: ".$self->zkh->get_error);
+        if (my $error = $self->zkh->get_error) {
+            $self->_error("Could not check $positions{$first} existence: $error");
         }
         if ($first_exists) {
             $first_watch->wait;
         }
     }
+}
+
+
+sub _error
+{
+    my $self = shift;
+    my $message = shift;
+
+    $self->log->log_and_die(level => 'critical', message => $message);
 }
 
 

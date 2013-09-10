@@ -1,4 +1,8 @@
-1.00    Mon, 15 Jul 15 2013
+1.01    Mon, 09 Sep 2013
+        * lockname with '/' is explicitly forbidden
+        * simplified signal handling
+
+1.00    Mon, 15 Jul 2013
         + resource leasing support
         * OO-interface for App::Switchman
         * default config at /etc/switchman.conf
