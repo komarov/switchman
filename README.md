@@ -41,7 +41,7 @@ the current host is specified in group description.
 
 Example (data stored prefix znode):
 
-    {"groups":{"group1":["host1", "host2"], "group2":"host1"}}
+    {"groups":{"group1":["host1","host2"],"group2":"host1"}}
 
 Then if you execute
     
@@ -49,6 +49,13 @@ Then if you execute
     user@host2$ switchman -g group2 -- CMD
 
 switchman will exit immediately.
+
+Also you can refer to groups from other groups:
+
+    {"groups":{"group1":["host1","group3"],"group2":"host1","group3":"host2"}}
+
+The logic is the following: if a value in a group description isn't found among
+group names it is treated as a host name.
 
 Note: all host names MUST be fqdns.
 

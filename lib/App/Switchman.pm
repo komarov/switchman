@@ -1,6 +1,6 @@
 package App::Switchman;
 
-our $VERSION = '1.01';
+our $VERSION = '1.02';
 
 =head1 NAME
 
@@ -20,6 +20,7 @@ use File::Slurp;
 use Getopt::Long qw(GetOptionsFromArray);
 use JSON;
 use Linux::MemInfo;
+use List::MoreUtils qw(part uniq);
 use List::Util qw(min);
 use Log::Dispatch;
 use Moo;
@@ -131,19 +132,6 @@ sub BUILDARGS
 }
 
 
-sub BUILD
-{
-    my $self = shift;
-
-    $self->load_prefix_data;
-
-    my %resources = map {$_ => 1} $self->get_resources;
-    if (my @unknown_resources = grep {!exists $resources{$_}} keys %{$self->leases}) {
-        $self->_error("Unknown resources: ".join(', ', @unknown_resources));
-    }
-}
-
-
 sub _build_log
 {
     my $self = shift;
@@ -191,6 +179,31 @@ sub acquire_semaphore
         total => $self->leases->{$resource}->{total},
         zkh => $self->zkh,
     );
+}
+
+
+=head2 get_group_hosts
+
+Returns an arrayref of hosts included int the given group
+
+=cut
+
+sub get_group_hosts
+{
+    my $self = shift;
+    my $groups = shift;
+    my $group = shift;
+    my $seen = shift || {$group => 1};
+
+    my $items = $groups->{$group} or $self->_error(sprintf "Group <%s> is not described", $group);
+    $items = [$items] unless ref $items eq 'ARRAY';
+    my ($subgroups, $hosts) = part {exists $groups->{$_} ? 0 : 1} @$items;
+    for my $subgroup (@$subgroups) {
+        next if $seen->{$subgroup};
+        $seen->{$subgroup} = 1;
+        push @$hosts, @{$self->get_group_hosts($groups, $subgroup, $seen)};
+    }
+    return [uniq @$hosts];
 }
 
 
@@ -246,6 +259,7 @@ sub get_resources
 {
     my $self = shift;
 
+    $self->load_prefix_data;
     my $resources = eval {from_json($self->prefix_data)->{resources}} || [];
     return map {_process_resource_macro($_)} @$resources;
 }
@@ -261,9 +275,11 @@ sub is_group_serviced
 {
     my $self = shift;
 
-    my $hosts = eval {from_json($self->prefix_data)->{groups}->{$self->group}} or $self->_error(sprintf "Group <%s> is not described", $self->group);
+    $self->load_prefix_data;
+    my $groups = eval {from_json($self->prefix_data)->{groups}};
+    my $hosts = $self->get_group_hosts($groups, $self->group);
     my $fqdn = fqdn();
-    my $is_serviced = scalar grep {$fqdn eq $_} ref $hosts ? @$hosts : ($hosts);
+    my $is_serviced = grep {$fqdn eq $_} @$hosts;
     return $is_serviced;
 }
 
@@ -399,6 +415,11 @@ sub run
         exit;
     }
 
+    my %known_resources = map {$_ => 1} $self->get_resources;
+    if (my @unknown_resources = grep {!exists $known_resources{$_}} keys %{$self->leases}) {
+        $self->_error("Unknown resources: ".join(', ', @unknown_resources));
+    }
+
     my @resources = grep {exists $self->leases->{$_}} $self->get_resources;
     for my $resource (@resources) {
         if ($self->is_task_in_queue($resource)) {
@@ -458,7 +479,8 @@ sub run
         my $signame = shift;
         warn "Parent received SIG$signame, terminating child $CHILD\n";
         if (kill $signame => $CHILD) {
-            warn "Sent $signame to $CHILD\n";
+            warn "Sent SIG$signame to $CHILD\n";
+            sleep 1; # wait for process cleanup
         }
         if (kill 0 => $CHILD) {
             warn "Failed to $signame $CHILD\n";
@@ -478,7 +500,6 @@ sub run
                 last;
             }
             if ($self->group && $self->prefix_data_watch->{state}) {
-                $self->load_prefix_data;
                 unless ($self->is_group_serviced) {
                     $self->log->info(sprintf "Group <%s> is not serviced by the current host anymore", $self->group);
                     $self->_stop_child($CHILD);

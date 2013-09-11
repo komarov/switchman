@@ -1,4 +1,9 @@
-Revision history for Perl module App::switchman
+Revision history for Perl module App::Switchman
+
+1.02 2013-09-11
+    * implemented nested groups support
+    * removed load_prefix_data from BUILD
+    * reformatted Changes (thanks to Neil Bowers)
 
 1.01 2013-09-09
     * lockname with '/' is explicitly forbidden
