@@ -1,6 +1,6 @@
 package App::Switchman;
 
-our $VERSION = '1.02';
+our $VERSION = '1.03';
 
 =head1 NAME
 
@@ -27,7 +27,8 @@ use Moo;
 use Net::ZooKeeper qw(:acls :errors :events :node_flags);
 use Net::ZooKeeper::Semaphore;
 use Pod::Usage;
-use POSIX qw(WNOHANG strftime);
+use POSIX qw(strftime);
+use Scalar::Util qw(blessed);
 use Sys::CPU;
 use Sys::Hostname::FQDN qw(fqdn);
 
@@ -78,7 +79,7 @@ has queue_positions => (
     default => sub {+{}},
 );
 has zkh => (
-    is => 'ro',
+    is => 'rw',
     lazy => 1,
     builder => sub {Net::ZooKeeper->new($_[0]->zkhosts)},
 );
@@ -358,6 +359,9 @@ sub prepare_zknodes
 
     for my $path (@$nodes) {
         unless ($self->zkh->exists($path)) {
+            if (my $error = $self->zkh->get_error) {
+                $self->_error("Failed to check $path existence: $error");
+            }
             $self->zkh->create($path, _node_data(),
                 acl => ZOO_OPEN_ACL_UNSAFE,
             ) or $self->_error("Failed to prepare $path: ".$self->zkh->get_error);
@@ -402,6 +406,12 @@ Never returns
 sub run
 {
     my $self = shift;
+
+    # check connection and try and reconnect in case of a failure
+    $self->zkh->exists($self->prefix);
+    if (my $error = $self->zkh->get_error) {
+        $self->zkh(Net::ZooKeeper->new($self->zkhosts));
+    }
 
     $self->prepare_zknodes([$self->prefix, map {$self->prefix."/$_"} ($LOCKS_PATH, $QUEUES_PATH, $SEMAPHORES_PATH)]);
 
@@ -538,8 +548,7 @@ Shows help and exits
 
 sub usage
 {
-    pod2usage(-verbose => 99, -sections => [qw(USAGE DESCRIPTION EXAMPLES), 'SEE ALSO', 'COPYRIGHT AND LICENSE']);
-    exit 1;
+    pod2usage(-exitval => 1, -verbose => 99, -sections => [qw(USAGE DESCRIPTION EXAMPLES), 'SEE ALSO', 'COPYRIGHT AND LICENSE']);
 }
 
 
@@ -552,8 +561,7 @@ Shows version info and exits
 sub version
 {
     print "switchman $VERSION\n";
-    pod2usage(-verbose => 99, -sections => ['COPYRIGHT AND LICENSE']);
-    exit 1;
+    pod2usage(-exitval => 1, -verbose => 99, -sections => ['COPYRIGHT AND LICENSE']);
 }
 
 
@@ -605,7 +613,10 @@ sub _error
     my $self = shift;
     my $message = shift;
 
-    $self->log->log_and_die(level => 'critical', message => $message);
+    @_ = ($self->log, level => 'critical', message => $message);
+    my $class = blessed $self->log;
+    no strict 'refs';
+    goto &{"${class}::log_and_croak"};
 }
 
 

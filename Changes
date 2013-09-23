@@ -1,5 +1,9 @@
 Revision history for Perl module App::Switchman
 
+1.03 2013-09-23
+    * improved error handling
+    * optimistic reconnect
+
 1.02 2013-09-11
     * implemented nested groups support
     * removed load_prefix_data from BUILD
