@@ -1,6 +1,6 @@
 package App::Switchman;
 
-our $VERSION = '1.03';
+our $VERSION = '1.04';
 
 =head1 NAME
 
@@ -359,7 +359,8 @@ sub prepare_zknodes
 
     for my $path (@$nodes) {
         unless ($self->zkh->exists($path)) {
-            if (my $error = $self->zkh->get_error) {
+            my $error = $self->zkh->get_error;
+            if ($error && $error != ZNONODE) {
                 $self->_error("Failed to check $path existence: $error");
             }
             $self->zkh->create($path, _node_data(),
