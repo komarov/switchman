@@ -1,5 +1,8 @@
 Revision history for Perl module App::Switchman
 
+1.05 2013-10-07
+    * increased reconnect tries
+
 1.04 2013-09-25
     * fixed prepare_zknodes
 

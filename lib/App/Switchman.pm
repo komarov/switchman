@@ -1,6 +1,6 @@
 package App::Switchman;
 
-our $VERSION = '1.04';
+our $VERSION = '1.05';
 
 =head1 NAME
 
@@ -409,9 +409,15 @@ sub run
     my $self = shift;
 
     # check connection and try and reconnect in case of a failure
-    $self->zkh->exists($self->prefix);
-    if (my $error = $self->zkh->get_error) {
-        $self->zkh(Net::ZooKeeper->new($self->zkhosts));
+    for (1 .. 10) {
+        $self->zkh->exists($self->prefix);
+        my $error = $self->zkh->get_error;
+        if ($error && $error != ZNONODE) {
+            $self->log->debug("Trying to reconnect");
+            $self->zkh(Net::ZooKeeper->new($self->zkhosts));
+        } else {
+            last;
+        }
     }
 
     $self->prepare_zknodes([$self->prefix, map {$self->prefix."/$_"} ($LOCKS_PATH, $QUEUES_PATH, $SEMAPHORES_PATH)]);
