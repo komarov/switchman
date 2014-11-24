@@ -1,5 +1,8 @@
 Revision history for Perl module App::Switchman
 
+1.06 2014-11-24
+    * fixed bug in wait_in_queue for the case when the node was removed during processing
+
 1.05 2013-10-07
     * increased reconnect tries
 
