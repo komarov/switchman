@@ -605,7 +605,7 @@ sub wait_in_queue
 
         my $first_watch = $self->zkh->watch();
         my $first_exists = $self->zkh->exists("$queue_path/$positions{$first}", watch => $first_watch);
-        if (my $error = $self->zkh->get_error) {
+        if ((my $error = $self->zkh->get_error) && $self->zkh->get_error != ZNONODE) {
             $self->_error("Could not check $positions{$first} existence: $error");
         }
         if ($first_exists) {
