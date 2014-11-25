@@ -44,7 +44,6 @@ Example (data stored prefix znode):
     {"groups":{"group1":["host1","host2"],"group2":"host1"}}
 
 Then if you execute
-    
 
     user@host2$ switchman -g group2 -- CMD
 
@@ -152,7 +151,7 @@ which is critical in case of network split.
 
 # COPYRIGHT AND LICENSE
 
-This software is copyright (c) 2012-2013 by Yandex LLC.
+This software is copyright (c) 2012-2014 by Yandex LLC.
 
 This is free software; you can redistribute it and/or modify it under
 the same terms as the Perl 5 programming language system itself.
