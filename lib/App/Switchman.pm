@@ -78,6 +78,11 @@ has queue_positions => (
     is => 'ro',
     default => sub {+{}},
 );
+has termination_timeout => (
+    is => 'ro',
+    isa => sub {die "bad termination_timeout: $_[0]" if defined $_[0] && $_[0] !~ m{^\d+$}},
+    default => sub {10},
+);
 has zkh => (
     is => 'rw',
     lazy => 1,
@@ -125,7 +130,8 @@ sub BUILDARGS
     }
     die "$DEFAULT_CONFIG_PATH is absent and --config is missing, see $0 -h for help\n" unless $config_path;
     my $config = _get_and_check_config($config_path);
-    for my $key (qw/logfile loglevel prefix zkhosts/) {
+    for my $key (qw/logfile loglevel prefix termination_timeout zkhosts/) {
+        next unless exists $config->{$key};
         $options{$key} = $config->{$key};
     }
 
@@ -671,7 +677,7 @@ sub _stop_child
 
     kill TERM => $pid or die "Failed to TERM $pid";
     # give some time to terminate gracefully
-    for (1 .. 10) {
+    for (1 .. $self->termination_timeout) {
         return unless kill 0 => $pid;
         sleep 1;
     }
@@ -685,7 +691,7 @@ __END__
 
 =head1 COPYRIGHT AND LICENSE
 
-This software is copyright (c) 2012-2014 by Yandex LLC.
+This software is copyright (c) 2012-2015 by Yandex LLC.
 
 This is free software; you can redistribute it and/or modify it under
 the same terms as the Perl 5 programming language system itself.

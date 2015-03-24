@@ -36,8 +36,22 @@ Optional, default is /etc/switchman.conf
 
 The file is expected to contain a json-encoded hash with the following keys:
 
-    prefix: path to top level znode that contains group data and other nodes
-    zkhosts: ZooKeeper servers to connect to
+    prefix:
+        path to top level znode that contains group data and other nodes
+    zkhosts:
+        ZooKeeper servers to connect to
+
+Other keys are optional:
+
+    logfile:
+        path to an optional logfile
+    loglevel:
+        log level used for messages going to `logfile`
+        possible values: debug/info/warning/critical, defaults to "info"
+    termination_timeout:
+        number of seconds a child process is given between SIGTERM and SIGKILL,
+        see COMMAND TERMINATION
+        positive integer value, defaults to 10
 
 Example:
 
@@ -130,6 +144,15 @@ regularly checks if the lock still exists and that group description still lists
 the current host (given that the --group option was provided on start).
 If any of these checks fail, the command is terminated.
 
+=head1 COMMAND TERMINATION
+
+To terminate the command switchman (parent process) sends a SIGTERM signal to
+the command process and then waits for the number of seconds specified by in the
+`termination_timeout` configuration parameter before sending the final SIGKILL.
+
+If command process happens to exit before that timeout, switchman exits with
+the same exit code.
+
 =head1 EXAMPLES
 
 =over 4
@@ -173,7 +196,7 @@ which is critical in case of network split.
 
 =head1 COPYRIGHT AND LICENSE
 
-This software is copyright (c) 2012-2014 by Yandex LLC.
+This software is copyright (c) 2012-2015 by Yandex LLC.
 
 This is free software; you can redistribute it and/or modify it under
 the same terms as the Perl 5 programming language system itself.

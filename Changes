@@ -1,5 +1,8 @@
 Revision history for Perl module App::Switchman
 
+1.08 2015-03-24
+    + termination_timeout config option
+
 1.07 2014-12-08
     * specify minimal good version of Net::ZooKeeper in dependencies
 
