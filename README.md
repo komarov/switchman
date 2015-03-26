@@ -166,6 +166,17 @@ can change the configuration in ZooKeeper.
 You don't even need to have access to the hosts your scripts are installed on,
 which is critical in case of network split.
 
+# BUILD
+
+```
+git clone https://github.com/komarov/switchman.git
+cd switchman
+dzil build
+cd switchman-VERISON
+dh-make-perl -p switchman
+debuild
+```
+
 # SEE ALSO
 
     man 1 flock
