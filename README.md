@@ -172,7 +172,7 @@ which is critical in case of network split.
 git clone https://github.com/komarov/switchman.git
 cd switchman
 dzil build
-cd switchman-VERISON
+cd switchman-VERSION
 dh-make-perl -p switchman
 debuild
 ```
