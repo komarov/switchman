@@ -89,6 +89,7 @@ has zkh => (
     builder => sub {Net::ZooKeeper->new($_[0]->zkhosts)},
 );
 has zkhosts => (is => 'ro', required => 1);
+has use_locks => (is => 'ro', required => 1);
 
 
 sub BUILDARGS
@@ -99,7 +100,7 @@ sub BUILDARGS
     return $arguments if ref $arguments eq 'HASH';
     die "Bad constructor arguments: hashref or arrayref expected" unless ref $arguments eq 'ARRAY';
 
-    my %options = ();
+    my %options = (use_locks => 1);
     my $config_path;
     my $leases = {};
     GetOptionsFromArray(
@@ -110,6 +111,7 @@ sub BUILDARGS
         'lease=s' => $leases,
         'lockname=s' => \$options{lockname},
         'v|version' => \&version,
+        'lock!' => \$options{use_locks},
     ) or die "Couldn't parse options, see $0 -h for help\n";
 
     die "No command provided" unless @$arguments;
@@ -433,7 +435,7 @@ sub run
         exit;
     }
 
-    if ($self->zkh->exists($self->lock_path, watch => $self->lock_watch)) {
+    if ($self->use_locks && $self->zkh->exists($self->lock_path, watch => $self->lock_watch)) {
         $self->log->info(sprintf "Lock %s already exists", $self->lock_path);
         exit;
     }
@@ -470,7 +472,7 @@ sub run
         }
     }
 
-    unless ($self->get_lock) {
+    if ($self->use_locks && !$self->get_lock) {
         $self->log->info(sprintf "Lock %s already exists", $self->lockname);
         exit;
     }
@@ -657,7 +659,7 @@ sub _node_data
 sub _process_resource_macro
 {
     my $string = shift;
-    
+
     my %mem_info = Linux::MemInfo::get_mem_info();
     my %expand = (
         CPU => Sys::CPU::cpu_count(),
