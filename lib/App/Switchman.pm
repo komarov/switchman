@@ -89,7 +89,7 @@ has zkh => (
     builder => sub {Net::ZooKeeper->new($_[0]->zkhosts)},
 );
 has zkhosts => (is => 'ro', required => 1);
-has use_locks => (is => 'ro', required => 1);
+has use_locks => (is => 'ro', default => 1);
 
 
 sub BUILDARGS

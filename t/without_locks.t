@@ -1,10 +1,28 @@
 use strict;
 use warnings;
 
+BEGIN {
+
+    *CORE::GLOBAL::exit = sub {
+
+        my ( $code ) = @_;
+
+        if( caller() eq 'App::Switchman' ) {
+
+            Test::More::is( $code, 0, 'exit(0)' );
+
+        } else {
+
+            Test::More::fail();
+        }
+
+        CORE::exit( $code );
+    };
+};
+
 package TestApp;
 
 use Moo;
-use App::Switchman ();
 use Test::MockObject ();
 
 extends 'App::Switchman';
@@ -17,10 +35,17 @@ has zkh => (
         my $o = Test::MockObject -> new();
 
         $o -> set_isa( 'Net::ZooKeeper' );
-        $o -> always( get_error => 0 );
+        $o -> set_false( 'get_error' );
+        $o -> set_true( 'exists' );
 
         return $o;
     },
+);
+
+has lock_watch => (
+    is => 'ro',
+    lazy => 1,
+    builder => sub { {}; },
 );
 
 sub get_lock {
@@ -34,6 +59,7 @@ sub _build_log {
     my $o = Test::MockObject -> new();
 
     $o -> set_isa( 'Log::Dispatch' );
+    $o -> mock( info => sub {} );
 
     return $o;
 }
@@ -51,14 +77,15 @@ no Moo;
 
 package main;
 
-use Test::More;
+use Test::More tests => 1;
 
 my $switchman = TestApp -> new( {
-    command => 'exit 0u',
+    command => [ 'echo', '-n' ],
     lockname => 'dummy',
     prefix => '/dummy',
     zkhosts => 'localhost:2181',
     use_locks => 0,
+    leases => {},
 } );
 
 $switchman -> run();
