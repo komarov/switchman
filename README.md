@@ -106,6 +106,26 @@ A name for a lock to be acquired in ZooKeeper.
 
 Lock is implemented as an ephemeral node /myproject/switchman/locks/name
 
+- \--no-lock
+
+Optional.
+
+Disables the "lock" mechanism, thus not limiting you to run CMD in only a single
+instance.
+
+By default "lock" mechanism is enabled.
+
+Sometimes you may want to use Switchman only for its "groups" mechanism, to only
+strict your particular CMD to be executed on some particular host or hosts. In
+case your CMD is already able to not run its second instance on the same host if
+the first one is already running, but you do want to run an instance of this same
+CMD on more than one host simultaneously, it is possible to just disable "lock"
+mechanism in Switchman.
+
+Note: this will not disable, nor alter the behaviour of "lease" mechanism. It
+is possible to make "lease" mechanism and "lock" mechanism to work on per-host
+basis by prefixing lock name with host name, i.e.: ```--lockname `hostname`_lock```
+
 - \-h|--help
 
 Show this help and exit.
