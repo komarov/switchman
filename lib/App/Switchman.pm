@@ -89,7 +89,7 @@ has zkh => (
     builder => sub {Net::ZooKeeper->new($_[0]->zkhosts)},
 );
 has zkhosts => (is => 'ro', required => 1);
-has use_locks => (is => 'ro', default => 1);
+has do_get_lock => (is => 'ro', default => 1);
 
 
 sub BUILDARGS
@@ -100,7 +100,7 @@ sub BUILDARGS
     return $arguments if ref $arguments eq 'HASH';
     die "Bad constructor arguments: hashref or arrayref expected" unless ref $arguments eq 'ARRAY';
 
-    my %options = (use_locks => 1);
+    my %options = (do_get_lock => 1);
     my $config_path;
     my $leases = {};
     GetOptionsFromArray(
@@ -111,7 +111,7 @@ sub BUILDARGS
         'lease=s' => $leases,
         'lockname=s' => \$options{lockname},
         'v|version' => \&version,
-        'lock!' => \$options{use_locks},
+        'lock!' => \$options{do_get_lock},
     ) or die "Couldn't parse options, see $0 -h for help\n";
 
     die "No command provided" unless @$arguments;
@@ -435,7 +435,7 @@ sub run
         exit;
     }
 
-    if ($self->use_locks && $self->zkh->exists($self->lock_path, watch => $self->lock_watch)) {
+    if ($self->do_get_lock && $self->zkh->exists($self->lock_path, watch => $self->lock_watch)) {
         $self->log->info(sprintf "Lock %s already exists", $self->lock_path);
         exit;
     }
@@ -472,7 +472,7 @@ sub run
         }
     }
 
-    if ($self->use_locks && !$self->get_lock) {
+    if ($self->do_get_lock && !$self->get_lock) {
         $self->log->info(sprintf "Lock %s already exists", $self->lockname);
         exit;
     }

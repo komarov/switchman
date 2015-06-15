@@ -125,7 +125,7 @@ my $switchman = TestApp -> new( {
     lockname => 'dummy',
     prefix => '/dummy',
     zkhosts => 'localhost:2181',
-    use_locks => 1,
+    do_get_lock => 1,
     leases => {},
 } );
 
