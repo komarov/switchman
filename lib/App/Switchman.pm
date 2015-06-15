@@ -1,6 +1,6 @@
 package App::Switchman;
 
-our $VERSION = '1.08';
+our $VERSION = '1.09';
 
 =head1 NAME
 
@@ -40,6 +40,7 @@ our $SEMAPHORES_PATH ||= 'semaphores';
 
 
 has command => (is => 'ro', required => 1);
+has do_get_lock => (is => 'ro', default => 1);
 has group => (is => 'ro');
 has leases => (is => 'ro');
 has lock_path => (
@@ -89,7 +90,6 @@ has zkh => (
     builder => sub {Net::ZooKeeper->new($_[0]->zkhosts)},
 );
 has zkhosts => (is => 'ro', required => 1);
-has do_get_lock => (is => 'ro', default => 1);
 
 
 sub BUILDARGS

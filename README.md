@@ -115,12 +115,12 @@ instance.
 
 By default "lock" mechanism is enabled.
 
-Sometimes you may want to use Switchman only for its "groups" mechanism, to only
-strict your particular CMD to be executed on some particular host or hosts. In
+Sometimes you may want to use switchman only for its "groups" mechanism, to only
+restrict your particular CMD to be executed on some particular host or hosts. In
 case your CMD is already able to not run its second instance on the same host if
 the first one is already running, but you do want to run an instance of this same
 CMD on more than one host simultaneously, it is possible to just disable "lock"
-mechanism in Switchman.
+mechanism in switchman.
 
 Note: this will not disable, nor alter the behaviour of "lease" mechanism. It
 is possible to make "lease" mechanism and "lock" mechanism to work on per-host

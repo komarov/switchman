@@ -1,5 +1,8 @@
 Revision history for Perl module App::Switchman
 
+1.09 2015-06-15
+    + --no-lock option
+
 1.08 2015-03-24
     + termination_timeout config option
 
