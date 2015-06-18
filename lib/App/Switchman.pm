@@ -624,6 +624,10 @@ sub wait_in_queue
         my $first = min keys %positions;
         return if $first eq $position;
 
+        if (!exists $positions{$position}) {
+            $self->_error("Lost position in queue");
+        }
+
         my $first_watch = $self->zkh->watch();
         my $first_exists = $self->zkh->exists("$queue_path/$positions{$first}", watch => $first_watch);
         if (($self->zkh->get_error) && $self->zkh->get_error != ZNONODE) {
