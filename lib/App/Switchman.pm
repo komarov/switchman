@@ -423,14 +423,20 @@ sub run
 
     # check connection and try and reconnect in case of a failure
     for (1 .. 10) {
-        $self->zkh->exists($self->prefix);
-        my $error = $self->zkh->get_error;
-        if ($error && $error != ZNONODE) {
-            $self->log->debug("Trying to reconnect");
-            $self->zkh(Net::ZooKeeper->new($self->zkhosts));
+        if (!$self->zkh) {
+            $self->log->debug("NetZookeeper initialization failed");
         } else {
-            last;
+            $self->zkh->exists($self->prefix);
+            if (!$self->zkh->get_error || $self->zkh->get_error == ZNONODE) {
+                last;
+            }
         }
+        $self->log->debug("Trying to reconnect");
+        $self->zkh(Net::ZooKeeper->new($self->zkhosts));
+    }
+
+    if (!$self->zkh) {
+        $self->_error("Failed to connect to ZooKeeper");
     }
 
     $self->zkh->{data_read_len} = $self->data_read_len;
