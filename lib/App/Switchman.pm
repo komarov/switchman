@@ -240,7 +240,7 @@ sub get_lock
         if ($error == ZNODEEXISTS) {
             return undef;
         } else {
-            $self->_error(sprintf("Could not acquire lock %s: %s", $self->lockname, $error));
+            $self->_error(sprintf("Could not acquire lock %s: %s", $self->lockname, $self->zkh->str_error));
         }
     }
     return $self->zkh->exists($lock_path, watch => $self->lock_watch);
@@ -312,7 +312,7 @@ sub is_task_in_queue
     my $re = quotemeta($self->lockname).'-\d+';
     my $is_in_queue = scalar grep {$_ =~ /^$re$/} $self->zkh->get_children($self->get_queue_path($resource));
     if ($self->zkh->get_error && $self->zkh->get_error != ZNONODE) {
-        $self->_error("Could not check queue for <$resource>: ".$self->zkh->get_error);
+        $self->_error("Could not check queue for <$resource>: ".$self->zkh->str_error);
     }
     $self->log->debug(sprintf "Task <%s> is already queued up for resource <%s>", $self->lockname, $resource) if $is_in_queue;
     return $is_in_queue;
@@ -332,8 +332,8 @@ sub leave_queues
     for my $resource (keys %{$self->queue_positions}) {
         my $position = $self->queue_positions->{$resource};
         $self->zkh->delete($position);
-        if (my $error = $self->zkh->get_error) {
-            $self->_error("Could not delete <$position>: $error");
+        if ($self->zkh->get_error) {
+            $self->_error("Could not delete <$position>: ".$self->zkh->str_error);
         }
         delete $self->queue_positions->{$resource};
     }
@@ -352,8 +352,8 @@ sub load_prefix_data
     my $self = shift;
 
     my $data = $self->zkh->get($self->prefix, watch => $self->prefix_data_watch);
-    if (my $error = $self->zkh->get_error) {
-        $self->_error("Could not get data: $error");
+    if ($self->zkh->get_error) {
+        $self->_error("Could not get data: ".$self->zkh->str_error);
     }
     $self->prefix_data($data);
 }
@@ -374,11 +374,11 @@ sub prepare_zknodes
         unless ($self->zkh->exists($path)) {
             my $error = $self->zkh->get_error;
             if ($error && $error != ZNONODE) {
-                $self->_error("Failed to check $path existence: $error");
+                $self->_error("Failed to check $path existence: ".$self->zkh->str_error);
             }
             $self->zkh->create($path, _node_data(),
                 acl => ZOO_OPEN_ACL_UNSAFE,
-            ) or $self->_error("Failed to prepare $path: ".$self->zkh->get_error);
+            ) or $self->_error("Failed to prepare $path: ".$self->zkh->str_error);
         }
     }
 }
@@ -402,8 +402,8 @@ sub queue_up
         acl => ZOO_OPEN_ACL_UNSAFE,
         flags => (ZOO_EPHEMERAL | ZOO_SEQUENCE),
     );
-    if (my $error = $self->zkh->get_error) {
-        $self->_error(sprintf("Could not push task <%s> in queue for <%s>: %s", $self->lockname, $resource, $error));
+    if ($self->zkh->get_error) {
+        $self->_error(sprintf("Could not push task <%s> in queue for <%s>: %s", $self->lockname, $resource, $self->zkh->str_error));
     }
     $self->queue_positions->{$resource} = $item_path;
     return $item_path;
@@ -604,8 +604,8 @@ sub wait_in_queue
 
     while (1) {
         my @items = $self->zkh->get_children($queue_path);
-        if (my $error = $self->zkh->get_error) {
-            $self->_error("Could not get items in queue $queue_path: $error");
+        if ($self->zkh->get_error) {
+            $self->_error("Could not get items in queue $queue_path: ".$self->zkh->str_error);
         }
         my %positions;
         for my $item (@items) {
@@ -620,8 +620,8 @@ sub wait_in_queue
 
         my $first_watch = $self->zkh->watch();
         my $first_exists = $self->zkh->exists("$queue_path/$positions{$first}", watch => $first_watch);
-        if ((my $error = $self->zkh->get_error) && $self->zkh->get_error != ZNONODE) {
-            $self->_error("Could not check $positions{$first} existence: $error");
+        if (($self->zkh->get_error) && $self->zkh->get_error != ZNONODE) {
+            $self->_error("Could not check $positions{$first} existence: ".$self->zkh->str_error);
         }
         if ($first_exists) {
             $first_watch->wait;
