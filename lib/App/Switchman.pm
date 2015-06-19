@@ -84,6 +84,11 @@ has queue_positions => (
     is => 'ro',
     default => sub {+{}},
 );
+has resources_wait_timeout => (
+    is => 'ro',
+    isa => sub {die "bad resources_wait_timeout: $_[0]" if defined $_[0] && $_[0] !~ m{^[0-9]+$}},
+    default => sub {0},
+);
 has termination_timeout => (
     is => 'ro',
     isa => sub {die "bad termination_timeout: $_[0]" if defined $_[0] && $_[0] !~ m{^\d+$}},
@@ -137,7 +142,7 @@ sub BUILDARGS
     }
     die "$DEFAULT_CONFIG_PATH is absent and --config is missing, see $0 -h for help\n" unless $config_path;
     my $config = _get_and_check_config($config_path);
-    for my $key (qw/data_read_len logfile loglevel prefix termination_timeout zkhosts/) {
+    for my $key (qw/data_read_len logfile loglevel prefix resources_wait_timeout termination_timeout zkhosts/) {
         next unless exists $config->{$key};
         $options{$key} = $config->{$key};
     }
@@ -485,7 +490,20 @@ sub run
         }
     }
 
+    my $resources_wait_start_time = time;
+    local $SIG{ALRM} = sub {
+        # use 5 seconds gap to avoid the problem that the elapsed time can differ from the specified
+        if ($self->resources_wait_timeout && (time - $resources_wait_start_time) > ($self->resources_wait_timeout - 5)) {
+            $self->log->warn("Reached timeout while waiting for resources, we exit");
+            exit;
+        }
+    };
+    if ($self->resources_wait_timeout) {
+        alarm($self->resources_wait_timeout);
+    }
+
     my @semaphores = ();
+
     for my $resource (@resources) {
         $self->wait_in_queue($resource);
         # try to acquire a semaphore until success
@@ -502,6 +520,7 @@ sub run
             sleep 1;
         }
     }
+    alarm(0);
 
     if ($self->do_get_lock && !$self->get_lock) {
         $self->log->info(sprintf "Lock %s already exists", $self->lockname);

@@ -52,6 +52,9 @@ Other keys are optional:
     loglevel:
         log level used for messages going to `logfile`
         possible values: debug/info/warning/critical, defaults to "info"
+    resources_wait_timeout:
+        number of seconds, which limits time for acquiring all leases
+        natural integer value, defaults to 0, which means no timeout
     termination_timeout:
         number of seconds a child process is given between SIGTERM and SIGKILL,
         see COMMAND TERMINATION
