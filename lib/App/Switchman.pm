@@ -40,6 +40,11 @@ our $SEMAPHORES_PATH ||= 'semaphores';
 
 
 has command => (is => 'ro', required => 1);
+has data_read_len => (
+    is => 'ro',
+    isa => sub {die "bad data_read_len: $_[0]" if defined $_[0] && $_[0] !~ m{^[0-9]+$}},
+    default => sub {4095},
+);
 has do_get_lock => (is => 'ro', default => 1);
 has group => (is => 'ro');
 has leases => (is => 'ro');
@@ -132,7 +137,7 @@ sub BUILDARGS
     }
     die "$DEFAULT_CONFIG_PATH is absent and --config is missing, see $0 -h for help\n" unless $config_path;
     my $config = _get_and_check_config($config_path);
-    for my $key (qw/logfile loglevel prefix termination_timeout zkhosts/) {
+    for my $key (qw/data_read_len logfile loglevel prefix termination_timeout zkhosts/) {
         next unless exists $config->{$key};
         $options{$key} = $config->{$key};
     }
@@ -427,6 +432,8 @@ sub run
             last;
         }
     }
+
+    $self->zkh->{data_read_len} = $self->data_read_len;
 
     $self->prepare_zknodes([$self->prefix, map {$self->prefix."/$_"} ($LOCKS_PATH, $QUEUES_PATH, $SEMAPHORES_PATH)]);
 
