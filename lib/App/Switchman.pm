@@ -274,8 +274,7 @@ sub get_resources
     my $self = shift;
 
     $self->load_prefix_data;
-    my $resources = eval {from_json($self->prefix_data)->{resources}} || [];
-    return map {_process_resource_macro($_)} @$resources;
+    return map {_process_resource_macro($_)} @{$self->prefix_data->{resources}};
 }
 
 
@@ -290,8 +289,7 @@ sub is_group_serviced
     my $self = shift;
 
     $self->load_prefix_data;
-    my $groups = eval {from_json($self->prefix_data)->{groups}};
-    my $hosts = $self->get_group_hosts($groups, $self->group);
+    my $hosts = $self->get_group_hosts($self->prefix_data->{groups}, $self->group);
     my $fqdn = fqdn();
     my $is_serviced = grep {$fqdn eq $_} @$hosts;
     return $is_serviced;
@@ -351,11 +349,31 @@ sub load_prefix_data
 {
     my $self = shift;
 
-    my $data = $self->zkh->get($self->prefix, watch => $self->prefix_data_watch);
+    my $json_data = $self->zkh->get($self->prefix, watch => $self->prefix_data_watch);
     if ($self->zkh->get_error) {
         $self->_error("Could not get data: ".$self->zkh->str_error);
     }
-    $self->prefix_data($data);
+
+    my (%data, $prefix_data);
+    if ($json_data) {
+        $prefix_data = eval {from_json($json_data)};
+        if (!$prefix_data || $@) {
+            $self->_error("Could not decode data: $@");
+        } elsif (ref $prefix_data ne 'HASH') {
+            $self->_error("Bad prefix data: hashref expected");
+        }
+        if ($prefix_data->{resources} && ref $prefix_data->{resources} ne 'ARRAY') {
+            $self->_error("Bad prefix data: resources should be an array");
+        }
+        if ($prefix_data->{groups} && ref $prefix_data->{groups} ne 'HASH') {
+            $self->_error("Bad prefix data: groups should be a hash");
+        }
+    }
+
+    $data{resources} = $prefix_data->{resources} || [];
+    $data{groups} = $prefix_data->{groups} || {};
+
+    $self->prefix_data(\%data);
 }
 
 

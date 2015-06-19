@@ -6,6 +6,7 @@ Revision history for Perl module App::Switchman
     * using human-readable version of the error codes
     * handle Net::Zookeeper::new initialization fails
     * fixed possible endless loop during wait in queue
+    * load_prefix_data validates json data and stores decoded result
 
 1.09 2015-06-15
     + --no-lock option
