@@ -1,5 +1,7 @@
 Revision history for Perl module App::Switchman
 
+1.10 2015-06-22
+
 1.09 2015-06-15
     + --no-lock option
 
