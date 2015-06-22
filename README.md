@@ -27,11 +27,18 @@ The file is expected to contain a json-encoded hash with the following keys:
 
 Other keys are optional:
 
+    data_read_len:
+        the maximum length of data (in bytes) that could be retrieved from ZooKeeper nodes
+        increase this value if you had a large size data stored in prefix znode
+        positive integer value, defaults to 65535
     logfile:
         path to an optional logfile
     loglevel:
         log level used for messages going to `logfile`
         possible values: debug/info/warning/critical, defaults to "info"
+    resources_wait_timeout:
+        number of seconds, which limits time for acquiring all leases
+        natural integer value, defaults to 0, which means no timeout
     termination_timeout:
         number of seconds a child process is given between SIGTERM and SIGKILL,
         see COMMAND TERMINATION
