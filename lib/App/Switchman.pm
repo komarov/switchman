@@ -494,8 +494,7 @@ sub run
     local $SIG{ALRM} = sub {
         # use 5 seconds gap to avoid the problem that the elapsed time can differ from the specified
         if ($self->resources_wait_timeout && (time - $resources_wait_start_time) > ($self->resources_wait_timeout - 5)) {
-            $self->log->warn("Reached timeout while waiting for resources, we exit");
-            exit;
+            $self->_error("Reached timeout while waiting for resources");
         }
     };
     if ($self->resources_wait_timeout) {
