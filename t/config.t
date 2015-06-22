@@ -12,7 +12,7 @@ my $switchman = App::Switchman->new({
 });
 
 is($switchman->termination_timeout, 10, 'default termination timeout');
-is($switchman->data_read_len, 4095, 'default data_read_len value');
+is($switchman->data_read_len, 65535, 'default data_read_len value');
 is($switchman->resources_wait_timeout, 0, 'default resources_wait_timeout value');
 
 my $switchman2 = App::Switchman->new({

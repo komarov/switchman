@@ -46,7 +46,7 @@ Other keys are optional:
     data_read_len:
         the maximum length of data that could be retrieved from ZooKeeper nodes
         increase this value if you had a large size data stored in prefix znode
-        positive integer value, defaults to 4095
+        positive integer value, defaults to 65535
     logfile:
         path to an optional logfile
     loglevel:

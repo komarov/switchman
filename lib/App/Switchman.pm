@@ -43,7 +43,7 @@ has command => (is => 'ro', required => 1);
 has data_read_len => (
     is => 'ro',
     isa => sub {die "bad data_read_len: $_[0]" if defined $_[0] && $_[0] !~ m{^[0-9]+$}},
-    default => sub {4095},
+    default => sub {65535},
 );
 has do_get_lock => (is => 'ro', default => 1);
 has group => (is => 'ro');
