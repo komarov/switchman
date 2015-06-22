@@ -44,7 +44,7 @@ The file is expected to contain a json-encoded hash with the following keys:
 Other keys are optional:
 
     data_read_len:
-        the maximum length of data that could be retrieved from ZooKeeper nodes
+        the maximum length of data (in bytes) that could be retrieved from ZooKeeper nodes
         increase this value if you had a large size data stored in prefix znode
         positive integer value, defaults to 65535
     logfile:
