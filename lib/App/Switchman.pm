@@ -661,7 +661,7 @@ sub wait_in_queue
         return if $first eq $position;
 
         if (!exists $positions{$position}) {
-            $self->_error("Lost position in queue");
+            $self->_error("Lost position <$position> in queue $queue_path");
         }
 
         my $first_watch = $self->zkh->watch();
