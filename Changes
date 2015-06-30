@@ -1,5 +1,14 @@
 Revision history for Perl module App::Switchman
 
+1.10 2015-06-22
+    + data_read_len config option
+    * increased default data_read_len from 1Kb to 64Kb
+    * using human-readable version of the error codes
+    * handle Net::Zookeeper::new initialization fails
+    * fixed possible endless loop during wait in queue
+    * load_prefix_data validates json data and stores decoded result
+    + resources_wait_timeout config option
+
 1.09 2015-06-15
     + --no-lock option
 

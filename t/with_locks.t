@@ -111,7 +111,7 @@ sub load_prefix_data {
 
     my ( $self ) = @_;
 
-    $self -> prefix_data( '{}' );
+    $self -> prefix_data( { resources => [], groups => [] } );
 }
 
 no Moo;

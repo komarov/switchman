@@ -1,6 +1,6 @@
 package App::Switchman;
 
-our $VERSION = '1.09';
+our $VERSION = '1.10';
 
 =head1 NAME
 
@@ -40,6 +40,11 @@ our $SEMAPHORES_PATH ||= 'semaphores';
 
 
 has command => (is => 'ro', required => 1);
+has data_read_len => (
+    is => 'ro',
+    isa => sub {die "bad data_read_len: $_[0]" if defined $_[0] && $_[0] !~ m{^[0-9]+$}},
+    default => sub {65535},
+);
 has do_get_lock => (is => 'ro', default => 1);
 has group => (is => 'ro');
 has leases => (is => 'ro');
@@ -78,6 +83,11 @@ has prefix_data_watch => (
 has queue_positions => (
     is => 'ro',
     default => sub {+{}},
+);
+has resources_wait_timeout => (
+    is => 'ro',
+    isa => sub {die "bad resources_wait_timeout: $_[0]" if defined $_[0] && $_[0] !~ m{^[0-9]+$}},
+    default => sub {0},
 );
 has termination_timeout => (
     is => 'ro',
@@ -132,7 +142,7 @@ sub BUILDARGS
     }
     die "$DEFAULT_CONFIG_PATH is absent and --config is missing, see $0 -h for help\n" unless $config_path;
     my $config = _get_and_check_config($config_path);
-    for my $key (qw/logfile loglevel prefix termination_timeout zkhosts/) {
+    for my $key (qw/data_read_len logfile loglevel prefix resources_wait_timeout termination_timeout zkhosts/) {
         next unless exists $config->{$key};
         $options{$key} = $config->{$key};
     }
@@ -235,7 +245,7 @@ sub get_lock
         if ($error == ZNODEEXISTS) {
             return undef;
         } else {
-            $self->_error(sprintf("Could not acquire lock %s: %s", $self->lockname, $error));
+            $self->_error(sprintf("Could not acquire lock %s: %s", $self->lockname, $self->zkh->str_error));
         }
     }
     return $self->zkh->exists($lock_path, watch => $self->lock_watch);
@@ -269,8 +279,7 @@ sub get_resources
     my $self = shift;
 
     $self->load_prefix_data;
-    my $resources = eval {from_json($self->prefix_data)->{resources}} || [];
-    return map {_process_resource_macro($_)} @$resources;
+    return map {_process_resource_macro($_)} @{$self->prefix_data->{resources}};
 }
 
 
@@ -285,8 +294,7 @@ sub is_group_serviced
     my $self = shift;
 
     $self->load_prefix_data;
-    my $groups = eval {from_json($self->prefix_data)->{groups}};
-    my $hosts = $self->get_group_hosts($groups, $self->group);
+    my $hosts = $self->get_group_hosts($self->prefix_data->{groups}, $self->group);
     my $fqdn = fqdn();
     my $is_serviced = grep {$fqdn eq $_} @$hosts;
     return $is_serviced;
@@ -307,7 +315,7 @@ sub is_task_in_queue
     my $re = quotemeta($self->lockname).'-\d+';
     my $is_in_queue = scalar grep {$_ =~ /^$re$/} $self->zkh->get_children($self->get_queue_path($resource));
     if ($self->zkh->get_error && $self->zkh->get_error != ZNONODE) {
-        $self->_error("Could not check queue for <$resource>: ".$self->zkh->get_error);
+        $self->_error("Could not check queue for <$resource>: ".$self->zkh->str_error);
     }
     $self->log->debug(sprintf "Task <%s> is already queued up for resource <%s>", $self->lockname, $resource) if $is_in_queue;
     return $is_in_queue;
@@ -327,8 +335,8 @@ sub leave_queues
     for my $resource (keys %{$self->queue_positions}) {
         my $position = $self->queue_positions->{$resource};
         $self->zkh->delete($position);
-        if (my $error = $self->zkh->get_error) {
-            $self->_error("Could not delete <$position>: $error");
+        if ($self->zkh->get_error) {
+            $self->_error("Could not delete <$position>: ".$self->zkh->str_error);
         }
         delete $self->queue_positions->{$resource};
     }
@@ -346,11 +354,31 @@ sub load_prefix_data
 {
     my $self = shift;
 
-    my $data = $self->zkh->get($self->prefix, watch => $self->prefix_data_watch);
-    if (my $error = $self->zkh->get_error) {
-        $self->_error("Could not get data: $error");
+    my $json_data = $self->zkh->get($self->prefix, watch => $self->prefix_data_watch);
+    if ($self->zkh->get_error) {
+        $self->_error("Could not get data: ".$self->zkh->str_error);
     }
-    $self->prefix_data($data);
+
+    my (%data, $prefix_data);
+    if ($json_data) {
+        $prefix_data = eval {from_json($json_data)};
+        if (!$prefix_data || $@) {
+            $self->_error("Could not decode data: $@");
+        } elsif (ref $prefix_data ne 'HASH') {
+            $self->_error("Bad prefix data: hashref expected");
+        }
+        if ($prefix_data->{resources} && ref $prefix_data->{resources} ne 'ARRAY') {
+            $self->_error("Bad prefix data: resources should be an array");
+        }
+        if ($prefix_data->{groups} && ref $prefix_data->{groups} ne 'HASH') {
+            $self->_error("Bad prefix data: groups should be a hash");
+        }
+    }
+
+    $data{resources} = $prefix_data->{resources} || [];
+    $data{groups} = $prefix_data->{groups} || {};
+
+    $self->prefix_data(\%data);
 }
 
 
@@ -369,11 +397,11 @@ sub prepare_zknodes
         unless ($self->zkh->exists($path)) {
             my $error = $self->zkh->get_error;
             if ($error && $error != ZNONODE) {
-                $self->_error("Failed to check $path existence: $error");
+                $self->_error("Failed to check $path existence: ".$self->zkh->str_error);
             }
             $self->zkh->create($path, _node_data(),
                 acl => ZOO_OPEN_ACL_UNSAFE,
-            ) or $self->_error("Failed to prepare $path: ".$self->zkh->get_error);
+            ) or $self->_error("Failed to prepare $path: ".$self->zkh->str_error);
         }
     }
 }
@@ -397,8 +425,8 @@ sub queue_up
         acl => ZOO_OPEN_ACL_UNSAFE,
         flags => (ZOO_EPHEMERAL | ZOO_SEQUENCE),
     );
-    if (my $error = $self->zkh->get_error) {
-        $self->_error(sprintf("Could not push task <%s> in queue for <%s>: %s", $self->lockname, $resource, $error));
+    if ($self->zkh->get_error) {
+        $self->_error(sprintf("Could not push task <%s> in queue for <%s>: %s", $self->lockname, $resource, $self->zkh->str_error));
     }
     $self->queue_positions->{$resource} = $item_path;
     return $item_path;
@@ -418,15 +446,23 @@ sub run
 
     # check connection and try and reconnect in case of a failure
     for (1 .. 10) {
-        $self->zkh->exists($self->prefix);
-        my $error = $self->zkh->get_error;
-        if ($error && $error != ZNONODE) {
-            $self->log->debug("Trying to reconnect");
-            $self->zkh(Net::ZooKeeper->new($self->zkhosts));
+        if (!$self->zkh) {
+            $self->log->debug("NetZookeeper initialization failed");
         } else {
-            last;
+            $self->zkh->exists($self->prefix);
+            if (!$self->zkh->get_error || $self->zkh->get_error == ZNONODE) {
+                last;
+            }
         }
+        $self->log->debug("Trying to reconnect");
+        $self->zkh(Net::ZooKeeper->new($self->zkhosts));
     }
+
+    if (!$self->zkh) {
+        $self->_error("Failed to connect to ZooKeeper");
+    }
+
+    $self->zkh->{data_read_len} = $self->data_read_len;
 
     $self->prepare_zknodes([$self->prefix, map {$self->prefix."/$_"} ($LOCKS_PATH, $QUEUES_PATH, $SEMAPHORES_PATH)]);
 
@@ -454,7 +490,19 @@ sub run
         }
     }
 
+    my $resources_wait_start_time = time;
+    local $SIG{ALRM} = sub {
+        # use 5 seconds gap to avoid the problem that the elapsed time can differ from the specified
+        if ($self->resources_wait_timeout && (time - $resources_wait_start_time) > ($self->resources_wait_timeout - 5)) {
+            $self->_error("Reached timeout while waiting for resources");
+        }
+    };
+    if ($self->resources_wait_timeout) {
+        alarm($self->resources_wait_timeout);
+    }
+
     my @semaphores = ();
+
     for my $resource (@resources) {
         $self->wait_in_queue($resource);
         # try to acquire a semaphore until success
@@ -471,6 +519,7 @@ sub run
             sleep 1;
         }
     }
+    alarm(0);
 
     if ($self->do_get_lock && !$self->get_lock) {
         $self->log->info(sprintf "Lock %s already exists", $self->lockname);
@@ -597,8 +646,8 @@ sub wait_in_queue
 
     while (1) {
         my @items = $self->zkh->get_children($queue_path);
-        if (my $error = $self->zkh->get_error) {
-            $self->_error("Could not get items in queue $queue_path: $error");
+        if ($self->zkh->get_error) {
+            $self->_error("Could not get items in queue $queue_path: ".$self->zkh->str_error);
         }
         my %positions;
         for my $item (@items) {
@@ -611,10 +660,15 @@ sub wait_in_queue
         my $first = min keys %positions;
         return if $first eq $position;
 
+        if (!exists $positions{$position}) {
+            $self->log->debug(sprintf "Our position <%s> does not exists in queue. Queue items: %s.", $position, join(', ', @items));
+            $self->_error("Lost position <$position> in queue $queue_path");
+        }
+
         my $first_watch = $self->zkh->watch();
         my $first_exists = $self->zkh->exists("$queue_path/$positions{$first}", watch => $first_watch);
-        if ((my $error = $self->zkh->get_error) && $self->zkh->get_error != ZNONODE) {
-            $self->_error("Could not check $positions{$first} existence: $error");
+        if (($self->zkh->get_error) && $self->zkh->get_error != ZNONODE) {
+            $self->_error("Could not check $positions{$first} existence: ".$self->zkh->str_error);
         }
         if ($first_exists) {
             $first_watch->wait;
