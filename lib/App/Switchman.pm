@@ -661,6 +661,7 @@ sub wait_in_queue
         return if $first eq $position;
 
         if (!exists $positions{$position}) {
+            $self->log->debug(sprintf "Our position <%s> does not exists in queue. Queue items: %s.", $position, join(', ', @items));
             $self->_error("Lost position <$position> in queue $queue_path");
         }
 
