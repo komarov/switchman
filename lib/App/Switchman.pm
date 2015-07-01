@@ -447,7 +447,7 @@ sub run
     # check connection and try and reconnect in case of a failure
     for (1 .. 10) {
         if (!$self->zkh) {
-            $self->log->debug("NetZookeeper initialization failed");
+            $self->log->debug("NetZooKeeper initialization failed");
         } else {
             $self->zkh->exists($self->prefix);
             if (!$self->zkh->get_error || $self->zkh->get_error == ZNONODE) {
