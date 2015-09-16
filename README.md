@@ -223,3 +223,4 @@ the same terms as the Perl 5 programming language system itself.
     Gennadiy Filatov
     Oleg Komarov <komarov@cpan.org>
     Pavel Selivanov
+    Sergey Zhuravlev
