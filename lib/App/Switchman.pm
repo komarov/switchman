@@ -1,6 +1,6 @@
 package App::Switchman;
 
-our $VERSION = '1.11';
+our $VERSION = '1.12';
 
 =head1 NAME
 
@@ -21,7 +21,7 @@ use Getopt::Long qw(GetOptionsFromArray);
 use JSON;
 use Linux::MemInfo;
 use List::MoreUtils qw(part uniq);
-use List::Util qw(min);
+use List::Util qw(max);
 use Log::Dispatch;
 use Moo;
 use Net::ZooKeeper qw(:acls :errors :events :node_flags);
@@ -31,6 +31,7 @@ use POSIX qw(strftime);
 use Scalar::Util qw(blessed);
 use Sys::CPU;
 use Sys::Hostname::FQDN qw(fqdn);
+use Sys::SigAction qw(set_sig_handler);
 
 
 our $DEFAULT_CONFIG_PATH ||= "/etc/switchman.conf";
@@ -191,6 +192,8 @@ sub acquire_semaphore
     my $self = shift;
     my $resource = shift;
 
+    $self->log->debug(sprintf "Trying to acquire semaphore %s", $resource);
+
     return Net::ZooKeeper::Semaphore->new(
         count => $self->leases->{$resource}->{count},
         data => _node_data(),
@@ -248,6 +251,7 @@ sub get_lock
             $self->_error(sprintf("Could not acquire lock %s: %s", $self->lockname, $self->zkh->str_error));
         }
     }
+    $self->log->debug(sprintf "Lock <%s> taken", $self->lock_path);
     return $self->zkh->exists($lock_path, watch => $self->lock_watch);
 }
 
@@ -317,7 +321,7 @@ sub is_task_in_queue
     if ($self->zkh->get_error && $self->zkh->get_error != ZNONODE) {
         $self->_error("Could not check queue for <$resource>: ".$self->zkh->str_error);
     }
-    $self->log->debug(sprintf "Task <%s> is already queued up for resource <%s>", $self->lockname, $resource) if $is_in_queue;
+    $self->log->debug(sprintf "Check if task <%s> already queued up for resource <%s>: %s", $self->lockname, $resource, ($is_in_queue ? 'true' : 'false'));
     return $is_in_queue;
 }
 
@@ -334,6 +338,7 @@ sub leave_queues
 
     for my $resource (keys %{$self->queue_positions}) {
         my $position = $self->queue_positions->{$resource};
+        $self->log->debug(sprintf "Delete from queue %s", $position);
         $self->zkh->delete($position);
         if ($self->zkh->get_error) {
             $self->_error("Could not delete <$position>: ".$self->zkh->str_error);
@@ -399,6 +404,7 @@ sub prepare_zknodes
             if ($error && $error != ZNONODE) {
                 $self->_error("Failed to check $path existence: ".$self->zkh->str_error);
             }
+            $self->log->debug("Create $path");
             $self->zkh->create($path, _node_data(),
                 acl => ZOO_OPEN_ACL_UNSAFE,
             ) or $self->_error("Failed to prepare $path: ".$self->zkh->str_error);
@@ -427,6 +433,8 @@ sub queue_up
     );
     if ($self->zkh->get_error) {
         $self->_error(sprintf("Could not push task <%s> in queue for <%s>: %s", $self->lockname, $resource, $self->zkh->str_error));
+    } else {
+        $self->log->debug(sprintf "Added task in queue for <%s>: <%s>", $resource, $item_path);
     }
     $self->queue_positions->{$resource} = $item_path;
     return $item_path;
@@ -481,6 +489,15 @@ sub run
         $self->_error("Unknown resources: ".join(', ', @unknown_resources));
     }
 
+    my $alarm_handler_guard;
+    if ($self->resources_wait_timeout) {
+        $alarm_handler_guard = set_sig_handler('ALRM', sub {
+            local *__ANON__ = 'timed_out_resources_waiting_handler';
+            $self->_error("Reached timeout while waiting for resources");
+        }, {safe => 0});
+        alarm($self->resources_wait_timeout);
+    }
+
     my @resources = grep {exists $self->leases->{$_}} $self->get_resources;
     for my $resource (@resources) {
         if ($self->is_task_in_queue($resource)) {
@@ -488,17 +505,6 @@ sub run
         } else {
             $self->queue_up($resource);
         }
-    }
-
-    my $resources_wait_start_time = time;
-    local $SIG{ALRM} = sub {
-        # use 5 seconds gap to avoid the problem that the elapsed time can differ from the specified
-        if ($self->resources_wait_timeout && (time - $resources_wait_start_time) > ($self->resources_wait_timeout - 5)) {
-            $self->_error("Reached timeout while waiting for resources");
-        }
-    };
-    if ($self->resources_wait_timeout) {
-        alarm($self->resources_wait_timeout);
     }
 
     my @semaphores = ();
@@ -513,20 +519,23 @@ sub run
             }
             my $semaphore = $self->acquire_semaphore($resource);
             if ($semaphore) {
+                $self->log->debug(sprintf "Semaphore <%s> acquired", $resource);
                 push @semaphores, $semaphore;
                 last;
             }
             sleep 1;
         }
     }
+
+    $self->log->debug("All resources acquired");
+
+    $self->leave_queues;
     alarm(0);
 
     if ($self->do_get_lock && !$self->get_lock) {
         $self->log->info(sprintf "Lock %s already exists", $self->lockname);
         exit;
     }
-
-    $self->leave_queues;
 
     # We want to exit right after our child dies
     $SIG{CHLD} = sub {
@@ -563,44 +572,47 @@ sub run
         }
     };
 
-    $CHILD = fork();
-    $self->_error("Could not fork") unless defined $CHILD;
+    $CHILD = $self->run_command_in_background;
 
-    if ($CHILD) {
-        while (1) {
-            if ($self->lock_watch->{state}) {
-                $self->log->warn("It's not secure to proceed, lock watch received ".$self->lock_watch->{event});
+    while (1) {
+        if ($self->lock_watch->{state}) {
+            $self->log->warn("It's not secure to proceed, lock watch received ".$self->lock_watch->{event});
+            $self->_stop_child($CHILD);
+            last;
+        }
+        if ($self->group && $self->prefix_data_watch->{state}) {
+            unless ($self->is_group_serviced) {
+                $self->log->info(sprintf "Group <%s> is not serviced by the current host anymore", $self->group);
                 $self->_stop_child($CHILD);
                 last;
             }
-            if ($self->group && $self->prefix_data_watch->{state}) {
-                unless ($self->is_group_serviced) {
-                    $self->log->info(sprintf "Group <%s> is not serviced by the current host anymore", $self->group);
-                    $self->_stop_child($CHILD);
-                    last;
-                }
-            }
-            sleep 1;
         }
-    } else {
-        $self->run_command;
+        sleep 1;
     }
 }
 
 
-=head2 run_command
+=head2 run_command_in_background
 
 Execs command
 
 =cut
 
-sub run_command
+sub run_command_in_background
 {
     my $self = shift;
 
     my $command = join(' ', @{$self->command});
     $self->log->info("Executing <$command>");
-    exec(@{$self->command}) or $self->_error("Failed to exec <$command>: $!");
+
+    my $child = fork();
+    if (!defined $child) {
+        $self->_error("Could not fork");
+    } elsif (!$child) {
+        exec(@{$self->command}) or $self->_error("Failed to exec <$command>: $!");
+    } else {
+        return $child
+    }
 }
 
 
@@ -645,6 +657,7 @@ sub wait_in_queue
     my ($position) = $queue_position =~ /-(\d+)$/;
 
     while (1) {
+        $self->log->debug(sprintf "Wait in queue cycle for %s", $queue_position);
         my @items = $self->zkh->get_children($queue_path);
         if ($self->zkh->get_error) {
             $self->_error("Could not get items in queue $queue_path: ".$self->zkh->str_error);
@@ -657,23 +670,27 @@ sub wait_in_queue
                 $self->_error("Unexpected item <$item> in queue $queue_path");
             }
         }
-        my $first = min keys %positions;
-        return if $first eq $position;
 
         if (!exists $positions{$position}) {
             $self->log->debug(sprintf "Our position <%s> does not exists in queue. Queue items: %s.", $position, join(', ', @items));
             $self->_error("Lost position <$position> in queue $queue_path");
         }
 
-        my $first_watch = $self->zkh->watch();
-        my $first_exists = $self->zkh->exists("$queue_path/$positions{$first}", watch => $first_watch);
+        my @prior_pos = grep {$_ < $position} keys %positions;
+        last if !@prior_pos;
+
+        my $neighbour = max @prior_pos;
+        my $neighbour_watch = $self->zkh->watch();
+        my $neighbour_exists = $self->zkh->exists("$queue_path/$positions{$neighbour}", watch => $neighbour_watch);
         if (($self->zkh->get_error) && $self->zkh->get_error != ZNONODE) {
-            $self->_error("Could not check $positions{$first} existence: ".$self->zkh->str_error);
+            $self->_error("Could not check $positions{$neighbour} existence: ".$self->zkh->str_error);
         }
-        if ($first_exists) {
-            $first_watch->wait;
+        if ($neighbour_exists) {
+            $self->log->debug(sprintf 'Wait for changing %s state (%d items before us)', $positions{$neighbour}, scalar(@prior_pos));
+            $neighbour_watch->wait;
         }
     }
+    $self->log->debug(sprintf "Waited %s", $queue_position);
 }
 
 
