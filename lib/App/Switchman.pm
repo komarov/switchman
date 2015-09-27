@@ -1,6 +1,6 @@
 package App::Switchman;
 
-our $VERSION = '1.13';
+our $VERSION = '1.14';
 
 =head1 NAME
 
@@ -16,7 +16,6 @@ use strict;
 use warnings;
 
 use File::Basename qw(basename);
-use File::Slurp;
 use Getopt::Long qw(GetOptionsFromArray);
 use JSON;
 use Linux::MemInfo;
@@ -710,7 +709,9 @@ sub _get_and_check_config
 {
     my $config_path = shift;
 
-    my $config_json = read_file($config_path, binmode => ':utf8');
+    open my $config_file, '<:encoding(UTF-8)', $config_path or die "Failed to open <$config_path>";
+    my $config_json = do {local $/; <$config_file>};
+    close $config_file;
     $config_json =~ s/(?:^\s*|\s*$)//gm;
     my $config = from_json($config_json);
     die "zkhosts is not defined in $config_path\n" unless $config->{zkhosts};
