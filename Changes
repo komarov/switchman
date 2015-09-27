@@ -1,5 +1,8 @@
 Revision history for Perl module App::Switchman
 
+1.13 2015-09-27
+    * fixed failing mock tests
+
 1.12 2015-09-10
     * changed handling of ALARM - use unsafe signals
     * improved debug logging

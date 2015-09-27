@@ -60,6 +60,7 @@ sub _build_log {
 
     $o -> set_isa( 'Log::Dispatch' );
     $o -> mock( info => sub {} );
+    $o -> mock( debug => sub {} );
 
     return $o;
 }
