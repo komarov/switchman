@@ -440,14 +440,13 @@ sub queue_up
 }
 
 
-=head2 run
+=head2 zk_connect
 
-Application loop
-Never returns
+Connect to zookeeper cluster
 
 =cut
 
-sub run
+sub zk_connect
 {
     my $self = shift;
 
@@ -470,6 +469,20 @@ sub run
     }
 
     $self->zkh->{data_read_len} = $self->data_read_len;
+}
+
+
+=head2 run
+
+Application loop
+Never returns
+
+=cut
+
+sub run
+{
+    my $self = shift;
+    $self->zk_connect();
 
     $self->prepare_zknodes([$self->prefix, map {$self->prefix."/$_"} ($LOCKS_PATH, $QUEUES_PATH, $SEMAPHORES_PATH)]);
 
