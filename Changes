@@ -1,5 +1,8 @@
 Revision history for Perl module App::Switchman
 
+1.15 2016-05-28
+    * https://github.com/komarov/switchman/pull/10 zk_connect as a public method
+
 1.14 2015-09-27
     * rt.cpan.org #107318: removed File::Slurp dependency
 

@@ -221,6 +221,7 @@ the same terms as the Perl 5 programming language system itself.
 
     Alexandr Duplishchev
     Gennadiy Filatov
+    Ilya Rusalowski
     Oleg Komarov <komarov@cpan.org>
     Pavel Selivanov
     Sergey Zhuravlev
