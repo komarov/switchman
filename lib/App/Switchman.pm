@@ -23,13 +23,13 @@ use List::MoreUtils qw(part uniq);
 use List::Util qw(max);
 use Log::Dispatch;
 use Moo;
+use Net::Domain qw(hostfqdn);
 use Net::ZooKeeper qw(:acls :errors :events :node_flags);
 use Net::ZooKeeper::Semaphore;
 use Pod::Usage;
 use POSIX qw(strftime);
 use Scalar::Util qw(blessed);
 use Sys::CPU;
-use Sys::Hostname::FQDN qw(fqdn);
 use Sys::SigAction qw(set_sig_handler);
 
 
@@ -298,7 +298,7 @@ sub is_group_serviced
 
     $self->load_prefix_data;
     my $hosts = $self->get_group_hosts($self->prefix_data->{groups}, $self->group);
-    my $fqdn = fqdn();
+    my $fqdn = hostfqdn();
     my $is_serviced = grep {$fqdn eq $_} @$hosts;
     return $is_serviced;
 }
@@ -737,7 +737,7 @@ sub _get_and_check_config
 
 sub _node_data
 {
-    return fqdn()." $$";
+    return hostfqdn()." $$";
 }
 
 
@@ -748,7 +748,7 @@ sub _process_resource_macro
     my %mem_info = Linux::MemInfo::get_mem_info();
     my %expand = (
         CPU => Sys::CPU::cpu_count(),
-        FQDN => fqdn(),
+        FQDN => hostfqdn(),
         MEMMB => int($mem_info{MemTotal} / 1024),
     );
     my $re = join '|', keys %expand;
