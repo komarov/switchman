@@ -1,6 +1,6 @@
 package App::Switchman;
 
-our $VERSION = '1.15';
+our $VERSION = '1.16';
 
 =head1 NAME
 
