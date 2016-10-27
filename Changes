@@ -1,5 +1,8 @@
 Revision history for Perl module App::Switchman
 
+1.16 2016-10-26
+    * fixed fqdn determination on ipv6-only hosts
+
 1.15 2016-05-28
     * https://github.com/komarov/switchman/pull/10 zk_connect as a public method
 
