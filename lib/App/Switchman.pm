@@ -94,10 +94,15 @@ has termination_timeout => (
     isa => sub {die "bad termination_timeout: $_[0]" if defined $_[0] && $_[0] !~ m{^\d+$}},
     default => sub {10},
 );
+has session_timeout => (
+    is => 'ro',
+    isa => sub {die "bad session_timeout: $_[0]" if defined $_[0] && $_[0] !~ m{^\d+$}},
+    default => sub {10000},
+);
 has zkh => (
     is => 'rw',
     lazy => 1,
-    builder => sub {Net::ZooKeeper->new($_[0]->zkhosts)},
+    builder => sub {Net::ZooKeeper->new($_[0]->zkhosts, session_timeout => $_[0]->session_timeout)},
 );
 has zkhosts => (is => 'ro', required => 1);
 
@@ -142,7 +147,7 @@ sub BUILDARGS
     }
     die "$DEFAULT_CONFIG_PATH is absent and --config is missing, see $0 -h for help\n" unless $config_path;
     my $config = _get_and_check_config($config_path);
-    for my $key (qw/data_read_len logfile loglevel prefix resources_wait_timeout termination_timeout zkhosts/) {
+    for my $key (qw/data_read_len logfile loglevel prefix resources_wait_timeout termination_timeout zkhosts session_timeout/) {
         next unless exists $config->{$key};
         $options{$key} = $config->{$key};
     }
@@ -461,7 +466,7 @@ sub zk_connect
             }
         }
         $self->log->debug("Trying to reconnect");
-        $self->zkh(Net::ZooKeeper->new($self->zkhosts));
+        $self->zkh(Net::ZooKeeper->new($self->zkhosts, session_timeout => $self->session_timeout));
     }
 
     if (!$self->zkh) {
@@ -469,6 +474,8 @@ sub zk_connect
     }
 
     $self->zkh->{data_read_len} = $self->data_read_len;
+
+    $self->log->debug("Connected with " . join(", ", map { "$_ " . ($self->zkh->{$_} // "undef") } qw(session_timeout watch_timeout)));
 }
 
 
@@ -588,7 +595,7 @@ sub run
 
     while (1) {
         if ($self->lock_watch->{state}) {
-            $self->log->warn("It's not secure to proceed, lock watch received ".$self->lock_watch->{event});
+            $self->log->warn(sprintf "It's not secure to proceed, lock watch received: " . join(", ", map { "$_ " . ($self->lock_watch->{$_} // "undef") } qw(event state)));
             $self->_stop_child($CHILD);
             last;
         }
